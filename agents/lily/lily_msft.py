@@ -29,7 +29,7 @@ from pathlib import Path
 # Allow running from repo root: python agents/lily/lily_msft.py
 sys.path.insert(0, str(Path(__file__).parents[2]))
 
-from azure.identity import DefaultAzureCredential
+from azure.identity import InteractiveBrowserCredential
 
 from agent_framework import Agent
 from agent_framework.foundry import FoundryChatClient
@@ -60,7 +60,7 @@ def _make_client() -> FoundryChatClient:
     return FoundryChatClient(
         project_endpoint=endpoint,
         model=LOOP_MODEL,
-        credential=DefaultAzureCredential(),
+        credential=InteractiveBrowserCredential(),
     )
 
 
