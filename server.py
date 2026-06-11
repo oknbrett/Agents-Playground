@@ -1,0 +1,221 @@
+"""Lily web backend — a thin FastAPI wrapper around the Anthropic agent loop.
+
+Exposes one endpoint, POST /api/chat, that the React frontend calls. It takes
+the conversation so far (plain text turns), runs Lily's tool-calling loop, and
+returns her final reply.
+
+The agent loop, tools, and system prompt all live in agents/lily/lily.py — this
+file only handles HTTP, CORS, and turning chat history into Anthropic messages.
+
+Run:
+    pip install -r requirements.txt
+    export ANTHROPIC_API_KEY=your_key        # PowerShell: $env:ANTHROPIC_API_KEY="..."
+    uvicorn server:app --reload --port 8000
+"""
+
+from __future__ import annotations
+
+import datetime
+import json
+import os
+import queue
+import threading
+from pathlib import Path
+from typing import Any, Literal
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+from agents.lily.costing import cost_usd, new_usage, total_tokens
+from agents.lily.lily import (
+    DEFAULT_DATA_FILE,
+    LILY_SYSTEM_PROMPT,
+    run_agent_loop,
+)
+
+# ── Spend guard ───────────────────────────────────────────────────────────────
+# Hard daily budget so a chat session can't silently burn through API credit.
+# Override with the LILY_DAILY_USD_CAP env var.
+
+DAILY_USD_CAP = float(os.environ.get("LILY_DAILY_USD_CAP", "2.00"))
+SPEND_FILE = Path(__file__).parent / ".lily_spend.json"
+_spend_lock = threading.Lock()
+
+
+def _load_spend() -> dict[str, Any]:
+    today = datetime.date.today().isoformat()
+    try:
+        data = json.loads(SPEND_FILE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {}
+    if data.get("date") != today:
+        data = {"date": today, "usd": 0.0, "requests": 0}
+    return data
+
+
+def _record_spend(usd: float) -> dict[str, Any]:
+    with _spend_lock:
+        data = _load_spend()
+        data["usd"] += usd
+        data["requests"] += 1
+        SPEND_FILE.write_text(json.dumps(data))
+        return data
+
+
+def _budget_exceeded() -> bool:
+    with _spend_lock:
+        return _load_spend()["usd"] >= DAILY_USD_CAP
+
+app = FastAPI(title="Lily API")
+
+# The Vite dev server runs on a different port, so the browser needs CORS.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5183", "http://127.0.0.1:5183"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class ChatRequest(BaseModel):
+    messages: list[ChatMessage]
+
+
+class ChatResponse(BaseModel):
+    reply: str
+
+
+# Overrides the CLI prompt's "call load_data first" workflow: in the web chat,
+# Lily is conversational by default and only escalates to tools when the
+# question genuinely needs data analysis.
+CHAT_MODE_GUIDANCE = """
+
+## Conversation mode (web chat)
+
+You are chatting with a demand planner in a chat interface. Not every message
+needs analysis:
+
+- For greetings, small talk, questions about what you can do, clarifications,
+  or anything answerable from the conversation so far — just reply naturally.
+  Do NOT call tools for these.
+- Only use your tools when the user's question actually requires looking at
+  the data (a SKU evaluation, a pattern check, a forecast comparison, a
+  history question). Then dig as deep as you need to.
+- For quick factual lookups, one or two tool calls may be enough — you don't
+  need the full structured recommendation block unless the user asks for a
+  forecast evaluation or recommendation.
+- If it's unclear whether the user wants a full analysis, ask a short
+  clarifying question instead of launching one.
+"""
+
+
+def _system_blocks() -> list[dict[str, Any]]:
+    """Base prompt plus chat-mode guidance and the data file location, so Lily
+    can call load_data without the user having to paste a file path."""
+    return [
+        {
+            "type": "text",
+            "text": (
+                LILY_SYSTEM_PROMPT
+                + CHAT_MODE_GUIDANCE
+                + f"\nThe demand data file is located at: {DEFAULT_DATA_FILE}\n"
+                "Use this path when calling load_data unless the user gives another."
+            ),
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+
+@app.get("/api/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/api/usage")
+def usage_today() -> dict[str, Any]:
+    with _spend_lock:
+        data = _load_spend()
+    return {**data, "daily_cap_usd": DAILY_USD_CAP}
+
+
+@app.post("/api/chat", response_model=ChatResponse)
+def chat(req: ChatRequest) -> ChatResponse:
+    # Stateless: the frontend sends the whole history each turn. Prior turns
+    # come in as plain text; the current turn's tool calls are handled inside
+    # run_agent_loop and never need to round-trip to the browser.
+    messages: list[dict[str, Any]] = [
+        {"role": m.role, "content": m.content} for m in req.messages
+    ]
+    try:
+        reply = run_agent_loop(messages, system=_system_blocks())
+    except Exception as exc:  # surface the error to the UI instead of a 500 blob
+        reply = f"⚠️ Lily hit an error: {exc}"
+    return ChatResponse(reply=reply)
+
+
+@app.post("/api/chat/stream")
+def chat_stream(req: ChatRequest) -> StreamingResponse:
+    """Same as /api/chat, but emits server-sent events while Lily works:
+
+        {"type": "tool_call", "name": ..., "input": ...}   one per tool call
+        {"type": "reply", "text": ...}                     the final answer
+        {"type": "error", "message": ...}
+
+    The agent loop is synchronous, so it runs in a worker thread and hands
+    events to the response generator through a queue.
+    """
+    messages: list[dict[str, Any]] = [
+        {"role": m.role, "content": m.content} for m in req.messages
+    ]
+    events: queue.Queue[dict[str, Any] | None] = queue.Queue()
+
+    def work() -> None:
+        if _budget_exceeded():
+            events.put({
+                "type": "error",
+                "message": (
+                    f"Daily budget of ${DAILY_USD_CAP:.2f} reached — Lily is "
+                    "pausing until tomorrow. (Override with LILY_DAILY_USD_CAP.)"
+                ),
+            })
+            events.put(None)
+            return
+        usage = new_usage()
+        try:
+            reply = run_agent_loop(
+                messages, system=_system_blocks(), on_event=events.put,
+                usage=usage,
+            )
+            events.put({"type": "reply", "text": reply})
+        except Exception as exc:
+            events.put({"type": "error", "message": str(exc)})
+        finally:
+            if usage["turns"] > 0:
+                spent = cost_usd(usage)
+                day = _record_spend(spent)
+                events.put({
+                    "type": "usage",
+                    "turns": usage["turns"],
+                    "total_tokens": total_tokens(usage),
+                    "cost_usd": spent,
+                    "today_usd": day["usd"],
+                })
+            events.put(None)  # sentinel: stream is done
+
+    threading.Thread(target=work, daemon=True).start()
+
+    def sse() -> Any:
+        while True:
+            event = events.get()
+            if event is None:
+                break
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(sse(), media_type="text/event-stream")

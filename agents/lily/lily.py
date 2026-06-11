@@ -261,15 +261,27 @@ def _system_blocks() -> list[dict[str, Any]]:
     ]
 
 
-def run_lily(user_message: str) -> str:
-    """Run the agent loop and return Lily's final text response."""
+def run_agent_loop(
+    messages: list[dict[str, Any]],
+    system: list[dict[str, Any]] | None = None,
+    on_event: Any = None,
+    usage: dict[str, int] | None = None,
+) -> str:
+    """Drive the tool-calling loop over an existing message history.
+
+    `messages` is mutated in place — assistant turns and tool results are
+    appended as the loop runs, so the caller ends up with the full transcript.
+    `on_event`, if given, is called with a dict for each tool call as it
+    happens ({"type": "tool_call", "name": ..., "input": ...}) so a UI can
+    show progress while Lily works. `usage`, if given, accumulates token
+    counts per API turn (see costing.new_usage). Returns Lily's final text.
+    """
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is not set.")
 
     client = anthropic.Anthropic(api_key=api_key)
-    system = _system_blocks()
-    messages: list[dict[str, Any]] = [{"role": "user", "content": user_message}]
+    system = system or _system_blocks()
     final_text = ""
 
     for turn in range(MAX_TOOL_TURNS):
@@ -281,6 +293,10 @@ def run_lily(user_message: str) -> str:
             messages=messages,
         )
 
+        if usage is not None:
+            from agents.lily.costing import add_usage
+            add_usage(usage, response.usage)
+
         # Append full content block (preserves tool_use blocks for the next turn)
         messages.append({"role": "assistant", "content": response.content})
 
@@ -288,6 +304,12 @@ def run_lily(user_message: str) -> str:
             tool_results = []
             for block in response.content:
                 if getattr(block, "type", None) == "tool_use":
+                    if on_event is not None:
+                        on_event({
+                            "type": "tool_call",
+                            "name": block.name,
+                            "input": block.input,
+                        })
                     result = _dispatch_tool(block.name, block.input)
                     tool_results.append({
                         "type": "tool_result",
@@ -306,6 +328,12 @@ def run_lily(user_message: str) -> str:
         break
 
     return final_text
+
+
+def run_lily(user_message: str) -> str:
+    """Run the agent loop on a single user message and return the final text."""
+    messages: list[dict[str, Any]] = [{"role": "user", "content": user_message}]
+    return run_agent_loop(messages)
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
