@@ -28,12 +28,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from agents.lily.lily import DEFAULT_DATA_FILE, LILY_SYSTEM_PROMPT
+
+# Auto-select backend: Groq (free) if GROQ_API_KEY is set, else Anthropic.
+if os.environ.get("GROQ_API_KEY") and not os.environ.get("ANTHROPIC_API_KEY"):
+    from agents.lily.lily_groq import run_agent_loop
+    _BACKEND = "groq"
+else:
+    from agents.lily.lily import run_agent_loop
+    _BACKEND = "anthropic"
+
 from agents.lily.costing import cost_usd, new_usage, total_tokens
-from agents.lily.lily import (
-    DEFAULT_DATA_FILE,
-    LILY_SYSTEM_PROMPT,
-    run_agent_loop,
-)
 
 # ── Spend guard ───────────────────────────────────────────────────────────────
 # Hard daily budget so a chat session can't silently burn through API credit.
@@ -73,7 +78,8 @@ app = FastAPI(title="Lily API")
 # The Vite dev server runs on a different port, so the browser needs CORS.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5183", "http://127.0.0.1:5183"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173",
+                   "http://localhost:5183", "http://127.0.0.1:5183"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -197,7 +203,7 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
         except Exception as exc:
             events.put({"type": "error", "message": str(exc)})
         finally:
-            if usage["turns"] > 0:
+            if _BACKEND == "anthropic" and usage["turns"] > 0:
                 spent = cost_usd(usage)
                 day = _record_spend(spent)
                 events.put({
