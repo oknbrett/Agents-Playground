@@ -9,7 +9,7 @@
 | When | What | Where it lives |
 |---|---|---|
 | **2026-05-29** | Brett's earlier solo attempt — a working 10-view `lily_views.sql` built directly on Bart's sample data | `C:/Users/Brett/OneDrive - HAN/Desktop/Lily/` (NOT in this repo) |
-| **2026-06-15** | Four-stream OBT design round: `PLAN.md`, `lily_br_views.sql`, `README.md` | this folder — **superseded** on version-key wiring + materialization |
+| **2026-06-15** | Four-stream OBT design round: `PLAN.md`, `lily_br_views.sql`, `README.md` | `archive/sql/` — **superseded** on version-key wiring + materialization |
 | **2026-06-16 (today)** | Corrected, runnable deliverables after reading Bart's real files: `lily_views_runnable.sql`, `lily_view_catalog.md`, this retrospective | this folder — **current** |
 
 The May 29 file and today's `lily_views_runnable.sql` overlap a lot (top SKUs, customer split, margin, flat-forecast, version delta) — today's is the cleaned, business-scoped version of that earlier work, aligned to the catalog.
@@ -62,8 +62,8 @@ The Word doc + the two SAP Excel samples corrected several assumptions:
 - `lily_views_runnable.sql` — views that execute on the data Bart provided (the demo-ready set).
 - `lily_view_catalog.md` — the full 13-comparison design with business use cases and data-readiness.
 
-**Earlier (2026-06-15) — superseded, kept for history:**
-- `PLAN.md`, `lily_br_views.sql`, `README.md` — four-stream design work. Superseded on the version-key wiring (it assumed streams live in `forecast_version_key`, which is actually the forecast *week*) and on materialization (dropped per Bart). The four-stream *concept* still stands; the wiring there does not.
+**Earlier (2026-06-15) — superseded, moved to `archive/sql/` to keep it out of future sessions' context:**
+- `archive/sql/PLAN.md`, `archive/sql/lily_br_views.sql`, `archive/sql/README.md` — four-stream design work. Superseded on the version-key wiring (it assumed streams live in `forecast_version_key`, which is actually the forecast *week*) and on materialization (dropped per Bart). The four-stream *concept* still stands; the wiring there does not.
 
 **Not in this repo (2026-05-29):**
 - `lily_views.sql` on `Desktop/Lily/` — Brett's earlier solo attempt; today's runnable file is its cleaned successor.
