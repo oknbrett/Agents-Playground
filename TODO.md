@@ -13,47 +13,38 @@ get pulled into a fresh session's context by accident. See
 
 ## Track 1 — System prompt (`agents/lily/lily.py` → `LILY_SYSTEM_PROMPT`)
 
-**Status:** mid-rewrite. Current on-disk version (commit `fd6dfab`) is a first
-pass — identity paragraph + "Hard guardrails" + "Communication style" + "How
-to work" (pointing at the skill instead of inlining procedure). It is **not**
-final. The following changes were agreed in chat but not yet written back to
-the file:
+**Status:** v3 rewrite written to `agents/lily/lily.py` (commit pending in
+this session). All items below are done — Track 1's wording work is
+complete for now.
 
-- [ ] Remove the "forecasts that look like placeholders" example from the
-      identity paragraph — it presupposes a finding we haven't verified.
-      Replace with a general rule: never assert a pattern/issue exists unless
-      the data actually retrieved shows it.
-- [ ] Remove guardrails that describe *today's* data limits (e.g. "only the
-      most recently closed actuals period", "inventory not wired in yet").
-      The system prompt should describe Lily's permanent role against the
-      *ideal* future dataset — data-readiness facts belong in the skill
-      (which is meant to evolve), not here.
-- [ ] Replace the "BR-06, BR-08, BR-09, BR-11" references with plain-language
-      scope — Lily was never given the BR numbering, so citing the codes is
-      meaningless to her.
-- [ ] Add an explicit mention of the statistical baseline forecast stream —
-      currently missing entirely.
-- [ ] Reconsider the "never write SQL, joins, or arithmetic" line. Keep the
-      arithmetic point (read pre-computed figures, don't calculate them), but
-      drop the SQL/joins framing — Lily's tools never exposed that capability
-      to begin with, so prohibiting it is confusing, not useful.
-- [ ] Restore an explicit verdict requirement in "Communication style":
-      Lily must end with RAISE / LOWER / KEEP (+ confidence). This is
-      distinct from forecast-accuracy judgment (which stays out of scope) —
-      a forward-looking verdict comparing plan vs. history/budget/stat
-      baseline is allowed; judging *past* DP accuracy is not.
-- [ ] Add an assumption-transparency rule: Lily must flag her own inferences
-      explicitly as inferences, never present them as fact. Example: if she
-      says "there's a trend," she must show it holds across years — calling
-      out a pattern seen in one year but not another as a trend, without
-      flagging the uncertainty, is the failure mode to prevent.
+- [x] Removed the "forecasts that look like placeholders" example from the
+      identity paragraph — replaced with a general rule: never assert a
+      pattern/issue exists unless the data actually retrieved shows it.
+- [x] Removed guardrails that described *today's* data limits (e.g. "only
+      the most recently closed actuals period", "inventory not wired in
+      yet"). The system prompt now describes Lily's permanent role against
+      the *ideal* future dataset — data-readiness facts live in the skill
+      instead.
+- [x] Replaced the "BR-06, BR-08, BR-09, BR-11" references with
+      plain-language scope.
+- [x] Added an explicit mention of the statistical baseline forecast stream.
+- [x] Dropped the "never write SQL, joins" framing; kept only the
+      arithmetic point, reframed positively ("read figures your tools have
+      already calculated rather than computing them yourself").
+- [x] Restored an explicit verdict requirement in "Communication style":
+      every analysis ends with RAISE / LOWER / KEEP / UNCERTAIN + confidence.
+- [x] Added an assumption-transparency rule: Lily must flag her own
+      inferences explicitly as inferences, never present them as fact (the
+      "trend visible in one year but not another" example).
 - [x] Persona decision (settled, don't revisit without new input): tone may
       vary by role, but pushback strength scales with confidence/evidence
       only — never with gender. Do not give Lily/Billy gendered personality
       traits.
 
-**Next action:** draft the full v3 prompt text in chat, get sign-off, write
-to `agents/lily/lily.py`, commit + push.
+**Next action, if anyone opens this track again:** re-read the prompt fresh
+and stress-test it against a real SKU run once the SQL tool (see Track 2)
+exists — right now it's still aspirational, since Lily's tools don't query
+`lily.*` views yet.
 
 ---
 
