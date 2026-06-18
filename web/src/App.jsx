@@ -46,14 +46,334 @@ const ChevronIcon = ({ open }) => (
   </svg>
 )
 
-const QUICK_ACTIONS = [
+const GearIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="3" />
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.32 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+  </svg>
+)
+const TrashIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+  </svg>
+)
+const DownloadIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" />
+  </svg>
+)
+const CloseIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="2" strokeLinecap="round">
+    <path d="M18 6L6 18M6 6l12 12" />
+  </svg>
+)
+
+const DEFAULT_QUICK_ACTIONS = [
   'Analyse a SKU',
   'Compare forecasts',
   'Find demand patterns',
   'Flag forecast bias',
 ]
 
+const SETTINGS_KEY = 'lily-settings'
+const MEMORY_KEY = 'lily-memory'
 const STORAGE_KEY = 'lily-chat-sessions'
+
+const DEFAULT_SETTINGS = {
+  displayName: 'Brett',
+  role: 'Demand Planning',
+  avatarInitial: 'B',
+  theme: 'system',
+  fontSize: 'default',
+  responseStyle: 'balanced',
+  apiUrl: 'http://localhost:8000/api/chat/stream',
+  quickActions: [...DEFAULT_QUICK_ACTIONS],
+}
+
+function loadSettings() {
+  try {
+    return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY)) }
+  } catch { return { ...DEFAULT_SETTINGS } }
+}
+
+function saveSettings(s) {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(s))
+}
+
+function loadMemory() {
+  try {
+    return JSON.parse(localStorage.getItem(MEMORY_KEY)) || []
+  } catch { return [] }
+}
+
+function saveMemory(m) {
+  localStorage.setItem(MEMORY_KEY, JSON.stringify(m))
+}
+
+const SETTINGS_TABS = [
+  { id: 'profile', label: 'Profile' },
+  { id: 'appearance', label: 'Appearance' },
+  { id: 'ai', label: 'AI Preferences' },
+  { id: 'memory', label: 'Memory' },
+  { id: 'sessions', label: 'Sessions' },
+  { id: 'shortcuts', label: 'Shortcuts' },
+]
+
+const SHORTCUTS = [
+  { keys: ['Enter'], desc: 'Send message' },
+  { keys: ['Shift', 'Enter'], desc: 'New line' },
+  { keys: ['⌘/Ctrl', 'K'], desc: 'New chat' },
+  { keys: ['Esc'], desc: 'Close / blur' },
+  { keys: ['⌘/Ctrl', ','], desc: 'Open settings' },
+]
+
+function SettingsModal({ settings, onSave, onClose, sessions, onClearSessions }) {
+  const [tab, setTab] = useState('profile')
+  const [draft, setDraft] = useState({ ...settings })
+  const [memory, setMemory] = useState(loadMemory)
+  const [newMemory, setNewMemory] = useState('')
+  const [confirmClear, setConfirmClear] = useState(null)
+
+  const update = (key, val) => setDraft((d) => ({ ...d, [key]: val }))
+
+  const handleSave = () => {
+    saveSettings(draft)
+    saveMemory(memory)
+    onSave(draft)
+    onClose()
+  }
+
+  const addMemory = () => {
+    const text = newMemory.trim()
+    if (!text) return
+    const entry = { id: crypto.randomUUID(), text, ts: Date.now() }
+    setMemory((m) => [entry, ...m])
+    setNewMemory('')
+  }
+
+  const deleteMemory = (id) => setMemory((m) => m.filter((e) => e.id !== id))
+
+  const clearAllMemory = () => {
+    if (confirmClear === 'memory') {
+      setMemory([])
+      setConfirmClear(null)
+    } else {
+      setConfirmClear('memory')
+    }
+  }
+
+  const clearAllSessions = () => {
+    if (confirmClear === 'sessions') {
+      onClearSessions()
+      setConfirmClear(null)
+    } else {
+      setConfirmClear('sessions')
+    }
+  }
+
+  const exportChats = () => {
+    const blob = new Blob([JSON.stringify(sessions, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `lily-chats-${new Date().toISOString().slice(0, 10)}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const updateQuickAction = (idx, val) => {
+    const next = [...draft.quickActions]
+    next[idx] = val
+    update('quickActions', next)
+  }
+
+  return (
+    <div className="settings-overlay" onClick={onClose}>
+      <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="settings-header">
+          <h2>Settings</h2>
+          <button className="settings-close" onClick={onClose} aria-label="Close settings">
+            <CloseIcon />
+          </button>
+        </div>
+        <div className="settings-body">
+          <nav className="settings-nav">
+            {SETTINGS_TABS.map((t) => (
+              <button
+                key={t.id}
+                className={`settings-nav-item${tab === t.id ? ' active' : ''}`}
+                onClick={() => { setTab(t.id); setConfirmClear(null) }}
+              >
+                {t.label}
+              </button>
+            ))}
+          </nav>
+          <div className="settings-content">
+
+            {tab === 'profile' && (
+              <div className="settings-section">
+                <h3>Profile</h3>
+                <p className="settings-desc">Personalize how Lily addresses you.</p>
+                <div className="settings-field">
+                  <label>Display name</label>
+                  <input type="text" value={draft.displayName} onChange={(e) => update('displayName', e.target.value)} />
+                </div>
+                <div className="settings-field">
+                  <label>Role / Team</label>
+                  <input type="text" value={draft.role} onChange={(e) => update('role', e.target.value)} />
+                </div>
+                <div className="settings-field">
+                  <label>Avatar initial</label>
+                  <input type="text" maxLength={2} value={draft.avatarInitial} onChange={(e) => update('avatarInitial', e.target.value.toUpperCase())} className="input-short" />
+                </div>
+              </div>
+            )}
+
+            {tab === 'appearance' && (
+              <div className="settings-section">
+                <h3>Appearance</h3>
+                <p className="settings-desc">Customize how Lily looks.</p>
+                <div className="settings-field">
+                  <label>Theme</label>
+                  <div className="segmented-control">
+                    {['light', 'dark', 'system'].map((t) => (
+                      <button key={t} className={draft.theme === t ? 'active' : ''} onClick={() => update('theme', t)}>
+                        {t === 'light' ? '☀ Light' : t === 'dark' ? '☽ Dark' : '◐ System'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="settings-field">
+                  <label>Font size</label>
+                  <div className="segmented-control">
+                    {['compact', 'default', 'large'].map((s) => (
+                      <button key={s} className={draft.fontSize === s ? 'active' : ''} onClick={() => update('fontSize', s)}>
+                        {s.charAt(0).toUpperCase() + s.slice(1)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {tab === 'ai' && (
+              <div className="settings-section">
+                <h3>AI Preferences</h3>
+                <p className="settings-desc">Adjust how Lily responds to you.</p>
+                <div className="settings-field">
+                  <label>Response style</label>
+                  <div className="segmented-control">
+                    {['concise', 'balanced', 'detailed'].map((s) => (
+                      <button key={s} className={draft.responseStyle === s ? 'active' : ''} onClick={() => update('responseStyle', s)}>
+                        {s.charAt(0).toUpperCase() + s.slice(1)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="settings-field">
+                  <label>API endpoint</label>
+                  <input type="text" value={draft.apiUrl} onChange={(e) => update('apiUrl', e.target.value)} className="input-wide" />
+                </div>
+              </div>
+            )}
+
+            {tab === 'memory' && (
+              <div className="settings-section">
+                <h3>Memory</h3>
+                <p className="settings-desc">Things Lily remembers about you across sessions. This is stored locally in your browser.</p>
+                <div className="memory-input-row">
+                  <input
+                    type="text"
+                    placeholder="Add something Lily should remember..."
+                    value={newMemory}
+                    onChange={(e) => setNewMemory(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') addMemory() }}
+                  />
+                  <button className="btn-primary" onClick={addMemory} disabled={!newMemory.trim()}>Add</button>
+                </div>
+                <div className="memory-list">
+                  {memory.length === 0 && (
+                    <div className="memory-empty">No memories yet. Add facts about your preferences, team, or workflow.</div>
+                  )}
+                  {memory.map((m) => (
+                    <div key={m.id} className="memory-item">
+                      <span className="memory-text">{m.text}</span>
+                      <button className="memory-delete" onClick={() => deleteMemory(m.id)} aria-label="Delete memory">
+                        <TrashIcon />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                {memory.length > 0 && (
+                  <button className="btn-danger" onClick={clearAllMemory}>
+                    {confirmClear === 'memory' ? 'Confirm clear all?' : 'Clear all memories'}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {tab === 'sessions' && (
+              <div className="settings-section">
+                <h3>Sessions</h3>
+                <p className="settings-desc">Manage your chat history and quick actions.</p>
+                <div className="settings-field">
+                  <label>Chat history</label>
+                  <div className="settings-row">
+                    <span className="settings-meta">{sessions.length} saved session{sessions.length === 1 ? '' : 's'}</span>
+                    <div className="settings-row-actions">
+                      <button className="btn-secondary" onClick={exportChats} disabled={sessions.length === 0}>
+                        <DownloadIcon /> Export
+                      </button>
+                      <button className="btn-danger" onClick={clearAllSessions} disabled={sessions.length === 0}>
+                        {confirmClear === 'sessions' ? 'Confirm delete all?' : 'Clear all'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div className="settings-field">
+                  <label>Quick actions</label>
+                  <p className="settings-desc">Customize the buttons shown on the welcome screen.</p>
+                  <div className="quick-actions-editor">
+                    {draft.quickActions.map((q, i) => (
+                      <input key={i} type="text" value={q} onChange={(e) => updateQuickAction(i, e.target.value)} />
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {tab === 'shortcuts' && (
+              <div className="settings-section">
+                <h3>Keyboard Shortcuts</h3>
+                <p className="settings-desc">Quick reference for available shortcuts.</p>
+                <div className="shortcuts-table">
+                  {SHORTCUTS.map((s, i) => (
+                    <div key={i} className="shortcut-row">
+                      <div className="shortcut-keys">
+                        {s.keys.map((k, j) => (
+                          <span key={j}>{j > 0 && <span className="shortcut-plus">+</span>}<kbd>{k}</kbd></span>
+                        ))}
+                      </div>
+                      <span className="shortcut-desc">{s.desc}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="settings-footer">
+          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" onClick={handleSave}>Save changes</button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 function loadSessions() {
   try {
@@ -145,22 +465,23 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [steps, setSteps] = useState([])
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [darkMode, setDarkMode] = useState(() => {
-    const saved = localStorage.getItem('lily-dark-mode')
-    if (saved !== null) return saved === 'true'
-    return window.matchMedia('(prefers-color-scheme: dark)').matches
-  })
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settings, setSettings] = useState(loadSettings)
   const taRef = useRef(null)
   const endRef = useRef(null)
+
+  const resolvedTheme = settings.theme === 'system'
+    ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+    : settings.theme
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading, steps])
 
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light')
-    localStorage.setItem('lily-dark-mode', darkMode)
-  }, [darkMode])
+    document.documentElement.setAttribute('data-theme', resolvedTheme)
+    document.documentElement.setAttribute('data-font-size', settings.fontSize)
+  }, [resolvedTheme, settings.fontSize])
 
   useEffect(() => {
     const handleKey = (e) => {
@@ -169,14 +490,25 @@ export default function App() {
         startNewChat()
         taRef.current?.focus()
       }
+      if ((e.metaKey || e.ctrlKey) && e.key === ',') {
+        e.preventDefault()
+        setSettingsOpen(true)
+      }
       if (e.key === 'Escape') {
+        if (settingsOpen) { setSettingsOpen(false); return }
         taRef.current?.blur()
         setSidebarOpen(false)
       }
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [])
+  }, [settingsOpen])
+
+  const clearAllSessions = () => {
+    setSessions([])
+    saveSessions([])
+    startNewChat()
+  }
 
   const persistSession = (id, msgs) => {
     setSessions((prev) => {
@@ -240,7 +572,7 @@ export default function App() {
     setSteps([])
 
     try {
-      const res = await fetch(API_URL, {
+      const res = await fetch(settings.apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: apiHistory }),
@@ -385,14 +717,14 @@ export default function App() {
         )}
 
         <div className="sidebar-footer">
-          <button className="theme-toggle" onClick={() => setDarkMode(!darkMode)} aria-label="Toggle dark mode">
-            {darkMode ? '☀️' : '☽'}
+          <button className="sidebar-settings-btn" onClick={() => setSettingsOpen(true)} aria-label="Open settings">
+            <GearIcon /> Settings
           </button>
           <div className="user-row">
-            <div className="avatar">B</div>
+            <div className="avatar">{settings.avatarInitial}</div>
             <div className="user-meta">
-              <div className="name">Brett</div>
-              <div className="plan">Demand Planning</div>
+              <div className="name">{settings.displayName}</div>
+              <div className="plan">{settings.role}</div>
             </div>
           </div>
         </div>
@@ -408,10 +740,10 @@ export default function App() {
 
         {messages.length === 0 ? (
           <div className="welcome">
-            <div className="greeting"><Leaf size={32} /> Good morning, Brett</div>
+            <div className="greeting"><Leaf size={32} /> Good morning, {settings.displayName}</div>
             {composer}
             <div className="quick-actions">
-              {QUICK_ACTIONS.map((q) => (
+              {settings.quickActions.map((q) => (
                 <button key={q} className="quick-action"
                         onClick={() => setInput(q)}>{q}</button>
               ))}
@@ -486,6 +818,16 @@ export default function App() {
           </>
         )}
       </main>
+
+      {settingsOpen && (
+        <SettingsModal
+          settings={settings}
+          sessions={sessions}
+          onSave={setSettings}
+          onClose={() => setSettingsOpen(false)}
+          onClearSessions={clearAllSessions}
+        />
+      )}
     </div>
   )
 }
