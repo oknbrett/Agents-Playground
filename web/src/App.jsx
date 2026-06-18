@@ -25,12 +25,24 @@ const QUICK_ACTIONS = [
   'Flag forecast bias',
 ]
 
-const RECENTS = [
-  'SKU001 — Premium Olive Oil',
-  'SKU006 — Cold Brew / Carrefour',
-  'SKU005 — Protein Bar MAPE review',
-  'Q3 forecast bias sweep',
-]
+const STORAGE_KEY = 'lily-chat-sessions'
+
+function loadSessions() {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []
+  } catch { return [] }
+}
+
+function saveSessions(sessions) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions))
+}
+
+function sessionTitle(messages) {
+  const first = messages.find((m) => m.role === 'user')
+  if (!first) return 'New chat'
+  const text = first.content.trim()
+  return text.length > 50 ? text.slice(0, 50) + '…' : text
+}
 
 const API_URL = 'http://localhost:8000/api/chat/stream'
 
@@ -52,16 +64,56 @@ function stepLabel({ name, input }) {
 }
 
 export default function App() {
+  const [sessions, setSessions] = useState(loadSessions)
+  const [activeId, setActiveId] = useState(null)
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
-  const [steps, setSteps] = useState([]) // live progress while Lily works
+  const [steps, setSteps] = useState([])
   const taRef = useRef(null)
   const endRef = useRef(null)
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading, steps])
+
+  const persistSession = (id, msgs) => {
+    setSessions((prev) => {
+      const existing = prev.find((s) => s.id === id)
+      let next
+      if (existing) {
+        next = prev.map((s) => s.id === id ? { ...s, messages: msgs, title: sessionTitle(msgs) } : s)
+      } else {
+        next = [{ id, messages: msgs, title: sessionTitle(msgs) }, ...prev]
+      }
+      saveSessions(next)
+      return next
+    })
+  }
+
+  const startNewChat = () => {
+    setMessages([])
+    setActiveId(null)
+    setInput('')
+    setSteps([])
+  }
+
+  const switchToSession = (session) => {
+    if (loading) return
+    setMessages(session.messages)
+    setActiveId(session.id)
+    setSteps([])
+  }
+
+  const deleteSession = (e, id) => {
+    e.stopPropagation()
+    setSessions((prev) => {
+      const next = prev.filter((s) => s.id !== id)
+      saveSessions(next)
+      return next
+    })
+    if (activeId === id) startNewChat()
+  }
 
   const autoGrow = (el) => {
     el.style.height = 'auto'
@@ -72,10 +124,13 @@ export default function App() {
     const text = input.trim()
     if (!text || loading) return
 
-    // Only role+content go to the API; steps/usage are UI-local decoration.
+    const chatId = activeId || crypto.randomUUID()
+    if (!activeId) setActiveId(chatId)
+
     const history = [...messages, { role: 'user', content: text }]
     const apiHistory = history.map(({ role, content }) => ({ role, content }))
     setMessages(history)
+    persistSession(chatId, history)
     setInput('')
     if (taRef.current) taRef.current.style.height = 'auto'
     setLoading(true)
@@ -120,25 +175,29 @@ export default function App() {
         }
       }
 
-      setMessages((m) => [
-        ...m,
+      const updated = [
+        ...history,
         {
           role: 'assistant',
           content: reply ?? '⚠️ The stream ended without a reply.',
           steps: liveSteps,
           usage,
         },
-      ])
+      ]
+      setMessages(updated)
+      persistSession(chatId, updated)
     } catch (err) {
-      setMessages((m) => [
-        ...m,
+      const updated = [
+        ...history,
         {
           role: 'assistant',
           content:
             `⚠️ Couldn't reach Lily's backend (${err.message}). ` +
             'Make sure the API is running: uvicorn server:app --reload --port 8000',
         },
-      ])
+      ]
+      setMessages(updated)
+      persistSession(chatId, updated)
     } finally {
       setLoading(false)
       setSteps([])
@@ -178,7 +237,7 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand"><Leaf /> Lily</div>
 
-        <button className="new-chat" onClick={() => setMessages([])}>
+        <button className="new-chat" onClick={startNewChat}>
           <Plus /> New chat
         </button>
 
@@ -187,12 +246,23 @@ export default function App() {
           <button className="nav-item">Saved analyses</button>
         </nav>
 
-        <div className="section-label">Recents</div>
-        <div className="chat-list">
-          {RECENTS.map((r) => (
-            <button key={r} className="chat-list-item">{r}</button>
-          ))}
-        </div>
+        {sessions.length > 0 && (
+          <>
+            <div className="section-label">Recents</div>
+            <div className="chat-list">
+              {sessions.map((s) => (
+                <button
+                  key={s.id}
+                  className={`chat-list-item${s.id === activeId ? ' active' : ''}`}
+                  onClick={() => switchToSession(s)}
+                >
+                  <span className="chat-list-title">{s.title}</span>
+                  <span className="chat-list-delete" onClick={(e) => deleteSession(e, s.id)}>×</span>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
 
         <div className="user-row">
           <div className="avatar">B</div>

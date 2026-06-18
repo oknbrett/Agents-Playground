@@ -92,17 +92,40 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 
 .chat-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
 .chat-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
   padding: 8px 12px;
   border-radius: 9px;
   font-size: 13.5px;
   color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   transition: background 0.12s ease, color 0.12s ease;
   text-align: left;
 }
 .chat-list-item:hover { background: var(--hover); color: var(--text); }
+.chat-list-item.active { background: var(--hover); color: var(--text); font-weight: 500; }
+.chat-list-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.chat-list-delete {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  font-size: 14px;
+  color: var(--text-faint);
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.chat-list-item:hover .chat-list-delete { opacity: 1; }
+.chat-list-delete:hover { background: rgba(0,0,0,0.08); color: var(--text); }
 
 .user-row {
   display: flex;
