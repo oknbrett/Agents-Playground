@@ -222,6 +222,7 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 }
 .thread { width: 100%; max-width: 720px; display: flex; flex-direction: column; gap: 22px; }
 .msg { display: flex; flex-direction: column; gap: 6px; }
+.msg.user { align-items: flex-end; }
 .msg .role {
   font-size: 12px;
   font-weight: 600;
@@ -230,13 +231,18 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 }
 .msg .body { font-size: 15px; line-height: 1.62; color: var(--text); white-space: pre-wrap; }
 .msg.user .bubble {
-  align-self: flex-start;
-  background: var(--bubble-user);
-  padding: 10px 14px;
-  border-radius: 14px;
+  background: var(--accent);
+  color: #fff;
+  padding: 10px 16px;
+  border-radius: 18px 18px 4px 18px;
   font-size: 15px;
   line-height: 1.55;
+  max-width: 75%;
+  word-wrap: break-word;
 }
+.msg.assistant .body,
+.msg.assistant .steps,
+.msg.assistant .usage { max-width: 100%; }
 .composer-docked {
   width: 100%;
   display: flex;
