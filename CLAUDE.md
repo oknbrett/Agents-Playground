@@ -2,19 +2,23 @@
 
 > 🟢 **Multi-agent architecture built.** Three agents are wired up:
 > - **Lily** — full-scope demand-planning analyst (15 tools). The brain.
-> - **Kofi** v1 — external web-research tool Lily dispatches (`external_research`).
+> - **Kofi** — external web-research tool Lily dispatches (`external_research`).
+>   Runs on Haiku + Anthropic web search; **fully traced** (queries/sources/cost).
 >   See **[`docs/KOFI.md`](docs/KOFI.md)**.
-> - **Dash** v1 — report & PPTX/PDF builder. Separate chat agent, no DB access.
->   See **[`docs/DASH.md`](docs/DASH.md)**.
+> - **Dash** — document builder. **Skill-driven code sandbox**: reads an Anthropic
+>   doc skill, writes a build script, runs it → PPTX / PDF / DOCX. Separate chat
+>   agent, no DB access. See **[`docs/DASH.md`](docs/DASH.md)** and the
+>   **[`Dash & Kofi (current)`](#dash--kofi-current-2026-06-22)** section below.
 >
 > Frontend supports agent switching, ask_planner choice cards, file upload (Dash),
-> and handoff from Lily to Dash. **Needs `ANTHROPIC_API_KEY` for live testing.**
+> handoff (Lily→Dash), live tool narration, and a Kofi activity panel.
+> **Needs `ANTHROPIC_API_KEY` for live testing.**
 
-> Last refreshed: 2026-06-21. Lily is now **full-scope** (forward plan **and**
-> backward forecast performance — Billy merged in) and runs on a **rich synthetic
-> dataset** (`sql/generate_synthetic.py`, ~1.14M rows) built in the real warehouse
-> shape. The real SAP sample tables are thinner — see "The data" below. Fiscal year
-> starts **November**. See `PROGRESS.md` for the running log.
+> Last refreshed: 2026-06-22. Lily is **full-scope** (forward plan **and** backward
+> forecast performance — Billy merged in) and runs on a **rich synthetic dataset**
+> (`sql/generate_synthetic.py`, ~1.14M rows) built in the real warehouse shape. The
+> real SAP sample tables are thinner — see "The data" below. Fiscal year starts
+> **November**. See `PROGRESS.md` for the running log.
 
 ## What this project is
 
@@ -193,6 +197,44 @@ history) but the reasoning principles carry over.
 
 ---
 
+## Dash & Kofi (current) — 2026-06-22
+
+### Dash — skill-driven document builder
+Dash builds documents by **writing and running code**, like Claude Code does with
+the document skills. Tools (in `dash.py`, dispatched through `sandbox.py`):
+`read_skill` → `write_file` → `run_bash` → `read_file`. He reads an Anthropic doc
+skill, writes a build script, runs it in a per-conversation workspace, and any
+`.pptx/.pdf/.docx` produced is auto-delivered to the planner.
+
+- **Formats:** PPTX (`pptxgenjs`), PDF (`reportlab`), DOCX (`docx-js`) — from scratch.
+- **`agents/dash/sandbox.py`** — workspace + `run_bash`/`write_file`/`read_skill`/
+  `collect_new_outputs`. ⚠️ **Runs model-generated code on the host.** OK for
+  local/demo; **must be isolated before release** — see
+  **[`docs/DASH_DEPLOYMENT.md`](docs/DASH_DEPLOYMENT.md)** (Path A container vs Path B
+  spec-renderer; Windows wrinkle; parked).
+- **Skills are Anthropic PROPRIETARY → NOT vendored** (repo is public). `agents/dash/
+  skills/` is gitignored; fetch per machine: **`python agents/dash/fetch_skills.py`**.
+- **Handoff distillation:** `POST /api/dash/handoff` runs a cheap **Haiku** pass
+  (`extract_handoff_brief`) to turn Lily's full analysis into a tight brief before
+  Dash sees it. Dash intake = **ask once, then build** (no forced approval card).
+- Legacy/unused: `build_pptx.py`, `build_pdf.py`.
+
+### Kofi — traced web research
+`external_research` returns findings **plus a `_trace`** (queries, sources, tokens,
+cost). The trace goes to: the server console, a gitignored
+`agents/kofi/.kofi_trace.jsonl` dev log, and an **in-app activity panel**.
+- **Priced at Haiku** (`cost_usd_haiku`), not Sonnet. A ~full 5-search run ≈ **$0.15**
+  (token volume from injected page content dominates, not the $0.01/search fee).
+- `KOFI_MAX_SEARCHES=5`. Headline turn-cost meter still over-counts Kofi at Sonnet
+  (merged number) — the Kofi panel is the accurate one.
+
+### Setup additions (beyond "How to run" above)
+`cd agents/dash && npm install` (pptxgenjs, docx) and
+`python agents/dash/fetch_skills.py` (doc skills). Optional Stage-2 deps for
+template-editing + visual QA: LibreOffice (`soffice`) + Poppler (`pdftoppm`).
+
+---
+
 ## Memory (planned, not built)
 
 A persistent, **team-shared** memory layer — the qualitative "why" the numbers
@@ -240,12 +282,14 @@ agents-playground/
 │   └── RETROSPECTIVE.md
 ├── docs/
 │   ├── MEMORY_DESIGN.md          ← team-shared memory plan
-│   ├── KOFI.md                   ← Kofi design doc (v1 built)
-│   └── DASH.md                   ← Dash design doc (v1 built)
+│   ├── KOFI.md                   ← Kofi design doc
+│   ├── DASH.md                   ← Dash design doc
+│   └── DASH_DEPLOYMENT.md        ← sandbox safety + release options (parked)
 ├── evals/                    ← eval harness (synthetic-era; needs rework for new data)
 ├── web/                      ← React + Vite chat UI (multi-agent: Lily + Dash)
 │   └── src/
-│       ├── App.jsx               ← agent switcher, ask_planner cards, handoff, file upload
+│       ├── App.jsx               ← agent switcher, ask_planner cards, handoff, file upload,
+│       │                            narration, Kofi activity panel, recency-ordered sidebar
 │       └── index.css             ← all component styles
 ├── agents/shared/
 │   └── __init__.py           ← ask_planner tool def + is_ask_planner_call (shared by Lily & Dash)
@@ -254,11 +298,15 @@ agents-playground/
 │   ├── lily.py               ← Anthropic (Claude) — owns prompt + 15 tool defs
 │   ├── lily_groq.py          ← Groq (Llama, free)
 │   ├── lily_msft.py          ← Microsoft Agent Framework (GPT-5 / Foundry)
-│   └── costing.py            ← pricing + daily spend cap (tokens + web-search fees)
+│   └── costing.py            ← pricing (Sonnet + Haiku) + daily spend cap + web-search fees
 ├── agents/kofi/
-│   └── kofi.py               ← external web-research tool; Lily's external_research (Anthropic web search)
+│   └── kofi.py               ← traced web-research tool; Lily's external_research (Anthropic web search)
 └── agents/dash/
-    ├── dash.py               ← report & PPTX/PDF builder; separate chat agent, no DB access
-    ├── build_pptx.py         ← python-pptx slide builder (4 layouts, Evergreen palette)
-    └── build_pdf.py          ← reportlab PDF builder (6 section types)
+    ├── dash.py               ← skill-driven document builder (read_skill/write_file/run_bash)
+    ├── sandbox.py            ← per-conversation workspace + code execution (⚠️ runs model code)
+    ├── fetch_skills.py       ← pull proprietary docx/pdf/pptx skills locally (NOT vendored)
+    ├── skills/               ← (gitignored) Anthropic doc skills, fetched per machine
+    ├── package.json          ← node deps: pptxgenjs, docx
+    ├── build_pptx.py         ← LEGACY (unused) python-pptx builder
+    └── build_pdf.py          ← LEGACY (unused) reportlab builder
 ```

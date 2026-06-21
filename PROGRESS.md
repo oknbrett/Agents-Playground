@@ -1,6 +1,57 @@
 # PROGRESS.md — Lily Web App: Status & Handoff
 
-> Last updated: 2026-06-21 · Repo: `oknbrett/agents-playground`
+> Last updated: 2026-06-22 · Repo: `oknbrett/agents-playground`
+
+## 2026-06-22 — Dash skill-sandbox, Kofi tracing, handoff distillation, UX fixes
+
+Third session. Reshaped Dash, gave Kofi observability, and polished the chat UX.
+Branch `claude/khoi-md-review-raxfw0` → merged to `main`.
+
+### Dash → skill-driven code sandbox (was: fixed builders)
+- **`agents/dash/sandbox.py`** — Dash now has a real workspace + code execution.
+  Per-conversation dir; tools `read_skill`, `write_file`, `run_bash`, `read_file`
+  (replacing `create_pptx`/`create_pdf`). Dash reads an Anthropic doc skill, writes
+  a build script, runs it, and the produced file is auto-delivered (`collect_new_outputs`).
+- **Formats: PPTX (pptxgenjs), PDF (reportlab), DOCX (docx-js)** — built from scratch.
+- **Skills are Anthropic PROPRIETARY → not vendored.** `agents/dash/skills/` is
+  gitignored; **`agents/dash/fetch_skills.py`** clones docx/pdf/pptx from
+  `anthropics/skills` per machine. (Repo is public — never commit the skills.)
+- ⚠️ Sandbox runs model-generated code on the host. Fine for local/demo; needs
+  isolation before release — see **[`docs/DASH_DEPLOYMENT.md`](docs/DASH_DEPLOYMENT.md)**
+  (Path A container vs Path B spec-renderer; Windows wrinkle; parked, decide post-demo).
+- `build_pptx.py` / `build_pdf.py` are now legacy (unused).
+
+### Smart handoff — Haiku distillation (was: copy-paste)
+- `POST /api/dash/handoff` now takes Lily's full analysis and a cheap **Haiku**
+  pass (`extract_handoff_brief`) distills it to a tight brief (subject / rec /
+  findings / numbers) before Dash sees it. No more dumping her whole markdown.
+- Dash intake: **ask once, then build** — dropped the forced outline-approval card;
+  use `ask_planner` only for genuine forks. Fixed dropped outline text when a card fires.
+
+### Kofi observability + accurate cost
+- Every dispatch is **traced**: queries + sources + tokens + cost → server console,
+  a gitignored `agents/kofi/.kofi_trace.jsonl` dev log, and an **in-app activity panel**
+  (🔎 Kofi · N searches · M sources · $X, expandable to clickable sources).
+- **Priced at Haiku, not Sonnet** (`cost_usd_haiku`). Real cost of a ~full 5-search
+  run ≈ **$0.15** (token volume from injected page content is the driver, not the fee).
+- Fixed a Windows cp1252 crash in trace logging (ASCII-safe, never raises) — would
+  have broken Kofi in the web app on Windows.
+- ⚠️ Headline turn-cost meter still counts Kofi tokens at Sonnet (merged number);
+  the Kofi panel is the accurate one. Reconcile later.
+
+### UX
+- **Narration before slow tools** — agents emit a `narration` event with the text
+  they wrote alongside a tool call (e.g. "sending Kofi to research X…"), shown live
+  during the run instead of a silent spinner. (Loop previously dropped that text.)
+- **Cost meter** shows cached vs fresh tokens.
+- **Sidebar orders by most-recent activity**, not creation time.
+
+### Deps
+- pip: `python-docx`, `pdfplumber`, `markdown`, `python-multipart`.
+- npm (in `agents/dash/`): `pptxgenjs`, `docx`.
+- Optional (Stage 2 — template editing + visual QA): LibreOffice + Poppler (not installed).
+
+---
 
 ## 2026-06-21 — Multi-agent architecture: Kofi v1, Dash v1, ask_planner, agent switcher
 
