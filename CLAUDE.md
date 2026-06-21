@@ -1,9 +1,12 @@
 # Agents Playground — Handoff
 
-> 🟢 **NEXT UP — Kofi integration.** The current focus is adding **Kofi**, a **web-search
-> research tool** that Lily dispatches when she needs external context (seasonality, weather,
-> competitor activity, market trends). Kofi is a tool, not a chat agent — Lily calls him,
-> he searches, returns a distilled report with citations. Design doc:
+> 🟢 **NEXT UP — Dash integration.** The current focus is adding **Dash**, a
+> **report & PPTX builder** the planner can hand off to from Lily's chat (or start
+> directly). Dash is a separate chat agent — no DB access, works from Lily's handoff
+> doc or user instructions. Outputs PPTX and PDF. Design doc:
+> **[`docs/DASH.md`](docs/DASH.md)**.
+>
+> **Kofi v1 is done** — external web-research tool Lily dispatches. Parked; see
 > **[`docs/KOFI.md`](docs/KOFI.md)**.
 
 > Last refreshed: 2026-06-21. Lily is now **full-scope** (forward plan **and**
@@ -242,6 +245,8 @@ agents-playground/
 │   ├── lily_groq.py          ← Groq (Llama, free)
 │   ├── lily_msft.py          ← Microsoft Agent Framework (GPT-5 / Foundry)
 │   └── costing.py            ← pricing + daily spend cap (tokens + web-search fees)
-└── agents/kofi/
-    └── kofi.py               ← external web-research agent; Lily's external_research tool (Anthropic web search)
+├── agents/kofi/
+│   └── kofi.py               ← external web-research agent; Lily's external_research tool (Anthropic web search)
+└── agents/dash/
+    └── dash.py               ← report & PPTX/PDF builder; separate chat agent, no DB access
 ```

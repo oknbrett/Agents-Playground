@@ -25,10 +25,11 @@ from typing import Any, Literal
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from agents.lily.lily import LILY_SYSTEM_PROMPT
+from agents.dash.dash import run_dash_loop, format_handoff_message, DASH_SYSTEM_PROMPT
 
 # .env (incl. GROQ_API_KEY) is loaded on import of the agents.lily package
 # (see agents/lily/__init__.py), so it's already in os.environ here.
@@ -236,3 +237,112 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
             yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(sse(), media_type="text/event-stream")
+
+
+# ── Dash endpoints ───────────────────────────────────────────────────────────
+
+DASH_CHAT_MODE_GUIDANCE = """
+
+## Conversation mode (web chat)
+
+You are chatting with a demand planner in a chat interface. They may arrive
+via a Lily handoff (the first message will contain Lily's analysis) or by
+starting a conversation directly.
+
+- If there's a handoff, acknowledge it and propose an outline before building.
+- If they arrive directly, ask what they'd like built and from what information.
+- After delivering a file, offer to revise or build a different format.
+"""
+
+
+def _dash_system_blocks() -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "text",
+            "text": DASH_SYSTEM_PROMPT + DASH_CHAT_MODE_GUIDANCE,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+
+class HandoffRequest(BaseModel):
+    handoff: dict[str, Any]
+
+
+class HandoffResponse(BaseModel):
+    first_message: str
+
+
+@app.post("/api/dash/handoff", response_model=HandoffResponse)
+def dash_handoff(req: HandoffRequest) -> HandoffResponse:
+    """Convert a structured Lily handoff into the opening message for a Dash chat.
+    The frontend calls this, then starts a new Dash chat with the returned message."""
+    return HandoffResponse(first_message=format_handoff_message(req.handoff))
+
+
+@app.post("/api/dash/chat/stream")
+def dash_chat_stream(req: ChatRequest) -> StreamingResponse:
+    """Dash's streaming chat endpoint — same SSE contract as Lily's.
+    Additionally emits {"type": "file_ready", "filename": ..., "path": ...}
+    when a PPTX or PDF is generated."""
+    messages: list[dict[str, Any]] = [
+        {"role": m.role, "content": m.content} for m in req.messages
+    ]
+    events: queue.Queue[dict[str, Any] | None] = queue.Queue()
+
+    def work() -> None:
+        if _budget_exceeded():
+            events.put({
+                "type": "error",
+                "message": (
+                    f"Daily budget of ${DAILY_USD_CAP:.2f} reached — Dash is "
+                    "pausing until tomorrow. (Override with LILY_DAILY_USD_CAP.)"
+                ),
+            })
+            events.put(None)
+            return
+        usage = new_usage()
+        try:
+            reply = run_dash_loop(
+                messages, system=_dash_system_blocks(), on_event=events.put,
+                usage=usage,
+            )
+            events.put({"type": "reply", "text": reply})
+        except Exception as exc:
+            events.put({"type": "error", "message": str(exc)})
+        finally:
+            if usage["turns"] > 0:
+                spent = cost_usd(usage)
+                day = _record_spend(spent)
+                events.put({
+                    "type": "usage",
+                    "turns": usage["turns"],
+                    "total_tokens": total_tokens(usage),
+                    "cost_usd": spent,
+                    "today_usd": day["usd"],
+                })
+            events.put(None)
+
+    threading.Thread(target=work, daemon=True).start()
+
+    def sse() -> Any:
+        while True:
+            event = events.get()
+            if event is None:
+                break
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(sse(), media_type="text/event-stream")
+
+
+@app.get("/api/dash/download/{filename}")
+def dash_download(filename: str) -> FileResponse:
+    """Download a file Dash generated (PPTX or PDF)."""
+    from agents.dash.build_pptx import OUTPUT_DIR
+    path = OUTPUT_DIR / filename
+    if not path.exists() or not path.is_file():
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"File not found: {filename}")
+    media = "application/pdf" if filename.endswith(".pdf") else \
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    return FileResponse(str(path), filename=filename, media_type=media)
