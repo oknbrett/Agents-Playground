@@ -16,6 +16,13 @@ PRICE_PER_MTOK = {
     "cache_write": 3.75,  # 1.25x input (5-minute TTL)
 }
 
+# Anthropic native web search (Kofi), USD per 1,000 search requests. The model
+# tokens Kofi spends are already counted via add_usage; this is the extra
+# per-search fee on top. Token pricing here is Sonnet's — Kofi may run a cheaper
+# model, so his token cost is a conservative (high) estimate, which is fine for a
+# spend guard.
+WEB_SEARCH_USD_PER_1K = 10.00
+
 
 def new_usage() -> dict[str, int]:
     """A fresh usage accumulator, to pass into run_agent_loop(usage=...)."""
@@ -24,6 +31,7 @@ def new_usage() -> dict[str, int]:
         "output_tokens": 0,
         "cache_read_input_tokens": 0,
         "cache_creation_input_tokens": 0,
+        "web_search_requests": 0,
         "turns": 0,
     }
 
@@ -38,17 +46,27 @@ def add_usage(acc: dict[str, int], response_usage: Any) -> None:
     acc["cache_creation_input_tokens"] += (
         getattr(response_usage, "cache_creation_input_tokens", 0) or 0
     )
+    # Server-side tool use (e.g. Kofi's web searches) carries its own fee.
+    server_tool_use = getattr(response_usage, "server_tool_use", None)
+    if server_tool_use is not None:
+        acc["web_search_requests"] += (
+            getattr(server_tool_use, "web_search_requests", 0) or 0
+        )
     acc["turns"] += 1
 
 
 def cost_usd(usage: dict[str, int]) -> float:
     """Dollar cost of an accumulated usage dict."""
-    return (
+    token_cost = (
         usage["input_tokens"] * PRICE_PER_MTOK["input"]
         + usage["output_tokens"] * PRICE_PER_MTOK["output"]
         + usage["cache_read_input_tokens"] * PRICE_PER_MTOK["cache_read"]
         + usage["cache_creation_input_tokens"] * PRICE_PER_MTOK["cache_write"]
     ) / 1_000_000
+    search_cost = (
+        usage.get("web_search_requests", 0) * WEB_SEARCH_USD_PER_1K / 1_000
+    )
+    return token_cost + search_cost
 
 
 def total_tokens(usage: dict[str, int]) -> int:

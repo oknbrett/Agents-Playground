@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parents[2]))
 import anthropic
 
 from agents.lily import tools as tools_module
+from agents.kofi.kofi import external_research
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -350,6 +351,50 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "required": ["material_id"],
         },
     },
+    {
+        "name": "external_research",
+        "description": (
+            "Dispatch Kofi, an external web-research agent, to gather real-world "
+            "context the internal data CAN'T show — seasonality, weather, competitor "
+            "activity, category/market trends, pricing moves, regulatory or supply-"
+            "chain news. Kofi runs his own web search and returns distilled findings "
+            "with cited source URLs, plus any points that CONFLICT with the internal "
+            "read you describe. Use this when an internal signal (a planner override, "
+            "a YoY swing, a budget gap, a flat forecast) might be driven by something "
+            "outside the numbers, or when the planner asks what's happening in the "
+            "market. You may call it more than once for different angles. It returns "
+            "external evidence only — YOU still own the RAISE / LOWER / KEEP call and "
+            "must weigh Kofi's findings against your data."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "The research question, specific and self-contained (Kofi has "
+                        "no access to your data or this chat). E.g. 'Outlook for Dutch "
+                        "consumer garden/plant-care demand spring 2026 and any weather "
+                        "or competitor signals'."
+                    ),
+                },
+                "context": {
+                    "type": "object",
+                    "description": (
+                        "Optional. What you're looking at, so Kofi can focus and flag "
+                        "contradictions with your read."
+                    ),
+                    "properties": {
+                        "material_id": _MATERIAL,
+                        "product_family": {"type": "string", "description": "Product family / category, e.g. 'Potting Soil — Indoor'."},
+                        "current_recommendation": {"type": "string", "description": "Your current lean: RAISE / LOWER / KEEP / UNCERTAIN."},
+                        "key_signal": {"type": "string", "description": "The internal signal prompting the question, e.g. 'YoY +18%, planner override +12% above statistical'."},
+                    },
+                },
+            },
+            "required": ["query"],
+        },
+    },
 ]
 
 # ── Tool dispatch ──────────────────────────────────────────────────────────────
@@ -368,14 +413,21 @@ TOOL_DISPATCH: dict[str, Any] = {
     "sku_performance_scan": tools_module.sku_performance_scan,
     "actuals_history": tools_module.actuals_history,
     "latest_actuals": tools_module.latest_actuals,
+    "external_research": external_research,
 }
 
+# Tools that can fold their own API spend into the loop's usage accumulator
+# (Kofi runs his own Claude + web-search calls, which cost real money).
+USAGE_AWARE_TOOLS = {"external_research"}
 
-def _dispatch_tool(name: str, inputs: dict) -> dict:
+
+def _dispatch_tool(name: str, inputs: dict, usage: dict | None = None) -> dict:
     fn = TOOL_DISPATCH.get(name)
     if fn is None:
         return {"error": f"Unknown tool: {name}"}
     try:
+        if name in USAGE_AWARE_TOOLS:
+            return fn(**inputs, usage=usage)
         return fn(**inputs)
     except Exception as exc:
         return {"error": str(exc), "tool": name, "inputs": inputs}
@@ -442,7 +494,7 @@ def run_agent_loop(
                             "name": block.name,
                             "input": block.input,
                         })
-                    result = _dispatch_tool(block.name, block.input)
+                    result = _dispatch_tool(block.name, block.input, usage=usage)
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,

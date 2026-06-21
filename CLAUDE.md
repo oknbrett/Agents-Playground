@@ -236,10 +236,12 @@ agents-playground/
 │   └── MEMORY_DESIGN.md          ← team-shared memory plan
 ├── evals/                    ← eval harness (synthetic-era; needs rework for new data)
 ├── web/                      ← React + Vite chat UI
-└── agents/lily/
-    ├── tools.py              ← read-only view queries (shared by all backends)
-    ├── lily.py               ← Anthropic (Claude) — owns prompt + tool defs
-    ├── lily_groq.py          ← Groq (Llama, free)
-    ├── lily_msft.py          ← Microsoft Agent Framework (GPT-5 / Foundry)
-    └── costing.py            ← pricing + daily spend cap (Anthropic backend)
+├── agents/lily/
+│   ├── tools.py              ← read-only view queries (shared by all backends)
+│   ├── lily.py               ← Anthropic (Claude) — owns prompt + tool defs (incl. external_research)
+│   ├── lily_groq.py          ← Groq (Llama, free)
+│   ├── lily_msft.py          ← Microsoft Agent Framework (GPT-5 / Foundry)
+│   └── costing.py            ← pricing + daily spend cap (tokens + web-search fees)
+└── agents/kofi/
+    └── kofi.py               ← external web-research agent; Lily's external_research tool (Anthropic web search)
 ```

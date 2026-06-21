@@ -1,6 +1,8 @@
-# Kofi — external research agent (DESIGNED · not yet built)
+# Kofi — external research agent (BUILT · v1)
 
-> Last updated: 2026-06-21. Design settled in session with Brett.
+> Last updated: 2026-06-21. v1 built: Kofi is a tool Lily calls
+> (`external_research`), backed by Anthropic's native web search. Needs
+> `ANTHROPIC_API_KEY` to run.
 
 ## What Kofi is
 
@@ -119,29 +121,43 @@ read → follow links → search again), but v1 is a single search-and-summarize
 
 | Decision | Choice | Notes |
 |---|---|---|
-| **Relationship to Lily** | Tool, not agent. Lives behind a function call. | Planner never talks to Kofi directly. |
-| **Search provider** | TBD — candidates: Tavily, Brave Search API, SerpAPI, Perplexity API | Need to evaluate cost, quality, rate limits. |
-| **Where Kofi lives** | `agents/kofi/` module, called from Lily's tool dispatch | Same backend, no separate server. |
-| **Model** | Can be lighter than Lily — summarization, not deep reasoning. Haiku-class or similar. | Cost optimization: Kofi runs many searches, keep per-call cost low. |
-| **Cost control** | Per-call budget + daily cap (like Lily's `costing.py`) | Search API costs + model costs per dispatch. |
-| **Context isolation** | Kofi gets ~100-token context from Lily, returns ~200-500 tokens. Lily's window never sees search noise. | This is the whole point of the architecture. |
+| **Relationship to Lily** | Tool, not agent. Lives behind `external_research`. | Planner never talks to Kofi directly. |
+| **Search provider** | **Anthropic native web search** (`web_search_20250305` server tool). | No new API key — reuses `ANTHROPIC_API_KEY`. Native citations. Only active when the Anthropic backend's key is present; Cerebras/Groq-only setups would need an external search API (Tavily/Brave) added later. |
+| **Where Kofi lives** | `agents/kofi/kofi.py`, registered in Lily's `TOOL_DISPATCH`. | Same backend, no separate server/endpoint. |
+| **Model** | `claude-haiku-4-5-20251001` by default (lighter/cheaper — summarization, not deep reasoning). Override with `KOFI_MODEL`. | Kofi runs many searches; keep per-call cost low. |
+| **Cost control** | Per-dispatch caps (`KOFI_MAX_SEARCHES`=5, `MAX_PAUSE_CONTINUATIONS`=6) + Kofi's tokens **and** web-search fees fold into Lily's existing daily spend cap. | `costing.py` now counts `web_search_requests` at $10/1k. The daily cap only guards the Anthropic Lily backend; on free backends Kofi is bounded by the per-dispatch caps only. |
+| **Context isolation** | Lily passes a small `context` dict (~100 tokens), Kofi returns a distilled findings JSON (~200–500 tokens). Lily's window never sees raw search results. | This is the whole point of the architecture. |
 
-## Open questions (for next session)
+## How to run / test
 
-- **Search provider** — which API? Tavily is popular for agent use cases, Brave is
-  cheap, Perplexity gives pre-synthesized answers. Need to pick one and test.
-- **How Lily decides to call Kofi** — always (for every SKU analysis)? Only when she
-  spots something unusual? Only when the planner asks? Probably: Lily decides
-  autonomously but the planner can also request it.
-- **Deep research skill** — v2 enhancement, multi-hop search for complex questions.
-  Scope later.
-- **Caching** — if Lily asks about "Netherlands garden seasonality" for SKU A and
-  then SKU B, should Kofi cache the first result? Probably yes, with a TTL.
+```bash
+export ANTHROPIC_API_KEY=...                # Kofi needs this for web search
+# standalone:
+python agents/kofi/kofi.py --query "Dutch garden-product demand outlook spring 2026" \
+  --material 10042N --signal "YoY +18%, planner override +12% over statistical"
+# via Lily: just ask her something market-facing in the web app / CLI and she'll
+# dispatch external_research herself when a signal looks externally driven.
+```
+
+## Open questions / next steps
+
+- **How Lily decides to call Kofi** — currently autonomous (the tool description
+  tells her when external context is relevant) and the planner can also ask. Watch
+  real transcripts to see if she over- or under-calls and tune the description.
+- **Free-backend support** — Anthropic web search only runs with `ANTHROPIC_API_KEY`.
+  To let Kofi work on a Cerebras/Groq-only setup, add a Tavily/Brave provider behind
+  the same `external_research` interface.
+- **Deep research skill** — v2: multi-hop search (search → read → follow → search).
+  v1 is a single search-and-summarize pass bounded by `KOFI_MAX_SEARCHES`.
+- **Caching** — repeated "NL garden seasonality" lookups across SKUs could share a
+  cached result with a TTL. Not built yet.
+- **Surface Kofi in the UI** — the web app currently streams Lily's `tool_call`
+  events generically; consider a distinct "Kofi is researching…" indicator and
+  rendering his cited sources.
 
 ## Status
 
-Design settled. Not yet built. Next steps:
-1. Pick a search provider and get an API key.
-2. Build `agents/kofi/` with the search loop + structured output.
-3. Add `external_research` to Lily's tool definitions.
-4. Wire into `server.py` (Kofi is internal to Lily's flow, no separate endpoint needed).
+**v1 built.** Files: `agents/kofi/kofi.py` (+ `__init__.py`), registered in
+`agents/lily/lily.py` (`TOOL_DEFINITIONS` / `TOOL_DISPATCH` / `USAGE_AWARE_TOOLS`),
+web-search cost accounting in `agents/lily/costing.py`. Runs on all three backends'
+tool loops; live searches require `ANTHROPIC_API_KEY`.
