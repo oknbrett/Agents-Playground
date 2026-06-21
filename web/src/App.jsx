@@ -562,16 +562,53 @@ function AskPlannerCards({ data, onSelect, disabled }) {
 }
 
 /* ── File download card ────────────────────────────── */
-function FileCard({ filename }) {
-  const ext = filename.split('.').pop()
-  const icon = ext === 'pdf' ? '📄' : '📊'
+function FileCard({ filename, display }) {
+  const label = display || filename
+  const ext = label.split('.').pop()
+  const icon = ext === 'pdf' ? '📄' : ext === 'docx' ? '📝' : ext === 'xlsx' ? '📈' : '📊'
   const downloadUrl = `http://localhost:8000/api/dash/download/${filename}`
   return (
-    <a href={downloadUrl} download className="file-card" target="_blank" rel="noopener noreferrer">
+    <a href={downloadUrl} download={display || filename} className="file-card" target="_blank" rel="noopener noreferrer">
       <span className="file-card-icon">{icon}</span>
-      <span className="file-card-name">{filename}</span>
+      <span className="file-card-name">{label}</span>
       <DownloadIcon />
     </a>
+  )
+}
+
+/* ── Kofi web-research activity (dev transparency) ──── */
+function KofiActivity({ traces }) {
+  const [open, setOpen] = useState(false)
+  if (!traces || traces.length === 0) return null
+  const searches = traces.flatMap(t => t.searches || [])
+  const nSearches = traces.reduce((a, t) => a + (t.n_searches || 0), 0)
+  const nSources = traces.reduce((a, t) => a + (t.n_sources || 0), 0)
+  const tokens = traces.reduce((a, t) => a + (t.tokens?.total || 0), 0)
+  const cost = traces.reduce((a, t) => a + (t.cost_usd || 0), 0)
+  return (
+    <div className="kofi-activity">
+      <button className="kofi-toggle" onClick={() => setOpen(!open)}>
+        <span>🔎 Kofi · {nSearches} search{nSearches === 1 ? '' : 'es'} · {nSources} sources · {(tokens / 1000).toFixed(1)}k tok · ${cost.toFixed(4)}</span>
+        <span className="kofi-chevron">{open ? '▾' : '▸'}</span>
+      </button>
+      {open && (
+        <div className="kofi-detail">
+          {searches.map((s, i) => (
+            <div key={i} className="kofi-search">
+              <div className="kofi-query">“{s.query || '(continuation)'}”</div>
+              <ul className="kofi-sources">
+                {(s.sources || []).map((src, j) => (
+                  <li key={j}>
+                    <a href={src.url} target="_blank" rel="noopener noreferrer">{src.title || src.url}</a>
+                    {src.age && <span className="kofi-age"> · {src.age}</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -625,6 +662,7 @@ export default function App() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [steps, setSteps] = useState([])
+  const [narration, setNarration] = useState('')  // live "sending Kofi…" line during a run
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settings, setSettings] = useState(loadSettings)
@@ -685,12 +723,13 @@ export default function App() {
   const persistSession = (id, msgs, agent) => {
     setSessions((prev) => {
       const existing = prev.find((s) => s.id === id)
-      let next
-      if (existing) {
-        next = prev.map((s) => s.id === id ? { ...s, messages: msgs, title: sessionTitle(msgs), agent: agent || s.agent } : s)
-      } else {
-        next = [{ id, messages: msgs, title: sessionTitle(msgs), agent: agent || activeAgent }, ...prev]
-      }
+      const updated = existing
+        ? { ...existing, messages: msgs, title: sessionTitle(msgs), agent: agent || existing.agent }
+        : { id, messages: msgs, title: sessionTitle(msgs), agent: agent || activeAgent }
+      // Order the sidebar by most-recent activity: drop any existing copy and
+      // prepend the updated one, so the conversation you just chatted in jumps
+      // to the top — not frozen at its creation position.
+      const next = [updated, ...prev.filter((s) => s.id !== id)]
       saveSessions(next)
       return next
     })
@@ -758,21 +797,33 @@ export default function App() {
   }
 
   /* ── Hand off to Dash ─────────────────────────────── */
-  const handoffToDash = (analysisText) => {
+  const handoffToDash = async (analysisText) => {
     switchAgent('dash')
     const chatId = crypto.randomUUID()
-    const firstMsg = {
-      role: 'user',
-      content: `Here's an analysis from Lily. Please turn it into a deliverable:\n\n${analysisText}`,
-      ts: Date.now(),
-    }
-    setMessages([firstMsg])
     setActiveId(chatId)
-    persistSession(chatId, [firstMsg], 'dash')
     setInput('')
     setSteps([])
-    // Auto-send
-    setTimeout(() => sendWithMessages([firstMsg], chatId, 'dash'), 100)
+    setLoading(true)
+    // Distill Lily's full analysis into a tight brief server-side (a cheap Haiku
+    // pass) rather than dumping her whole markdown into Dash. Falls back to the
+    // raw analysis if distillation is unavailable, so handoff never hard-fails.
+    let briefText
+    try {
+      const res = await fetch('http://localhost:8000/api/dash/handoff', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ analysis: analysisText }),
+      })
+      if (!res.ok) throw new Error(`Server responded ${res.status}`)
+      briefText = (await res.json()).first_message
+    } catch (e) {
+      briefText = `**Handoff from Lily** — here's the analysis to build from:\n\n${analysisText}`
+    }
+    const firstMsg = { role: 'user', content: briefText, ts: Date.now() }
+    setMessages([firstMsg])
+    persistSession(chatId, [firstMsg], 'dash')
+    setLoading(false)
+    sendWithMessages([firstMsg], chatId, 'dash')
   }
 
   /* ── Handle ask_planner response ───────────────── */
@@ -799,12 +850,13 @@ export default function App() {
     const url = AGENTS[agent].streamUrl
     setLoading(true)
     setSteps([])
+    setNarration('')
 
     try {
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: apiHistory }),
+        body: JSON.stringify({ messages: apiHistory, session_id: chatId }),
       })
       if (!res.ok) throw new Error(`Server responded ${res.status}`)
 
@@ -812,10 +864,12 @@ export default function App() {
       const decoder = new TextDecoder()
       let buffer = ''
       let liveSteps = []
+      let liveNarration = ''
       let reply = null
       let usage = null
       let askPlanner = null
       let files = []
+      let kofiTraces = []
 
       while (true) {
         const { done, value } = await reader.read()
@@ -830,6 +884,9 @@ export default function App() {
           if (event.type === 'tool_call') {
             liveSteps = [...liveSteps, stepLabel(event, agent)]
             setSteps(liveSteps)
+          } else if (event.type === 'narration') {
+            liveNarration = liveNarration ? `${liveNarration}\n\n${event.text}` : event.text
+            setNarration(liveNarration)
           } else if (event.type === 'reply') {
             reply = event.text
           } else if (event.type === 'usage') {
@@ -840,6 +897,8 @@ export default function App() {
             askPlanner = event
           } else if (event.type === 'file_ready') {
             files = [...files, event]
+          } else if (event.type === 'kofi_activity') {
+            kofiTraces = [...kofiTraces, event.trace]
           }
         }
       }
@@ -853,6 +912,7 @@ export default function App() {
           usage,
           askPlanner,
           files,
+          kofiTraces,
           agent,
           ts: Date.now(),
         },
@@ -1049,6 +1109,7 @@ export default function App() {
                             {m.ts && <div className="timestamp">{timeAgo(m.ts)}</div>}
                           </div>
                           <CollapsibleSteps steps={m.steps} />
+                          <KofiActivity traces={m.kofiTraces} />
                           {m.content && (
                             <div className="body markdown-body">
                               <Markdown remarkPlugins={[remarkGfm]}>{m.content}</Markdown>
@@ -1058,7 +1119,7 @@ export default function App() {
                           {m.files && m.files.length > 0 && (
                             <div className="file-cards">
                               {m.files.map((f, j) => (
-                                <FileCard key={j} filename={f.filename} />
+                                <FileCard key={j} filename={f.filename} display={f.display} />
                               ))}
                             </div>
                           )}
@@ -1087,7 +1148,10 @@ export default function App() {
                           {m.usage && (
                             <div className="usage">
                               {m.usage.turns} step{m.usage.turns === 1 ? '' : 's'} {'·'}{' '}
-                              {(m.usage.total_tokens / 1000).toFixed(1)}k tokens {'·'}{' '}
+                              {(m.usage.total_tokens / 1000).toFixed(1)}k tokens
+                              {m.usage.cached_tokens > 0 && (
+                                <> {' ('}{(m.usage.cached_tokens / 1000).toFixed(1)}k cached{')'}</>
+                              )} {'·'}{' '}
                               ${m.usage.cost_usd.toFixed(3)}
                             </div>
                           )}
@@ -1102,6 +1166,11 @@ export default function App() {
                       <div className="lily-avatar"><AgentIcon size={16} /></div>
                       <div className="role">{agentConfig.name}</div>
                     </div>
+                    {narration && (
+                      <div className="body markdown-body narration">
+                        <Markdown remarkPlugins={[remarkGfm]}>{narration}</Markdown>
+                      </div>
+                    )}
                     {steps.length > 0 && (
                       <div className="steps">
                         {steps.map((s, j) => (

@@ -496,6 +496,15 @@ def run_agent_loop(
         messages.append({"role": "assistant", "content": response.content})
 
         if response.stop_reason == "tool_use":
+            # Surface any text Lily wrote in the same turn as her tool calls (e.g.
+            # a heads-up that she's dispatching Kofi) so the UI shows it BEFORE the
+            # tool step streams — otherwise the planner stares at a silent spinner.
+            narration = "".join(
+                b.text for b in response.content if getattr(b, "type", None) == "text"
+            ).strip()
+            if narration and on_event is not None:
+                on_event({"type": "narration", "text": narration})
+
             for block in response.content:
                 if is_ask_planner_call(block):
                     if on_event is not None:
@@ -518,6 +527,13 @@ def run_agent_loop(
                             "input": block.input,
                         })
                     result = _dispatch_tool(block.name, block.input, usage=usage)
+                    # Kofi attaches a `_trace` (queries, sources, tokens, cost).
+                    # Surface it to the UI as its own event, then strip it from the
+                    # tool_result so Lily's context isn't bloated with raw source lists.
+                    if isinstance(result, dict) and "_trace" in result:
+                        trace = result.pop("_trace")
+                        if on_event is not None:
+                            on_event({"type": "kofi_activity", "trace": trace})
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,

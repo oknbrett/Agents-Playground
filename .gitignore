@@ -5,3 +5,12 @@ __pycache__/
 .DS_Store
 .lily_spend.json
 *.duckdb
+
+# Dash sandbox — per-session work dirs, generated docs, vendored node deps
+agents/dash/workspace/
+agents/dash/node_modules/
+/tmp/dash_output/
+agents/kofi/.kofi_trace.jsonl
+# Anthropic's doc skills are PROPRIETARY — never commit them to this public repo.
+# Each machine fetches them locally: python agents/dash/fetch_skills.py
+agents/dash/skills/

@@ -30,7 +30,12 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from agents.lily.lily import LILY_SYSTEM_PROMPT
-from agents.dash.dash import run_dash_loop, format_handoff_message, DASH_SYSTEM_PROMPT
+from agents.dash.dash import (
+    run_dash_loop,
+    format_handoff_message,
+    extract_handoff_brief,
+    DASH_SYSTEM_PROMPT,
+)
 
 # .env (incl. GROQ_API_KEY) is loaded on import of the agents.lily package
 # (see agents/lily/__init__.py), so it's already in os.environ here.
@@ -105,6 +110,8 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
+    # Stable per-conversation id so Dash's build workspace persists across turns.
+    session_id: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -121,9 +128,13 @@ CHAT_MODE_GUIDANCE = """
 You are chatting with a demand planner in a chat interface. Not every message
 needs analysis:
 
-- For greetings, small talk, questions about what you can do, clarifications,
-  or anything answerable from the conversation so far — just reply naturally.
-  Do NOT call tools for these.
+- For greetings and small talk, reply in one short, warm line and stop — e.g.
+  "Hey! What do you want to dig into?" You are talking to demand planners who
+  already know what you do, so do NOT introduce yourself or list your
+  capabilities unless they explicitly ask "what can you do". Never open with a
+  bulleted rundown of your skills.
+- For clarifications or anything answerable from the conversation so far — just
+  reply naturally. Do NOT call tools for these.
 - Only use your tools when the user's question actually requires looking at
   the data (a SKU forecast evaluation, a demand-vs-budget check, inventory
   coverage, product economics, or a top-SKUs ranking). Then dig as deep as
@@ -137,6 +148,13 @@ needs analysis:
   forecast evaluation or recommendation.
 - If it's unclear whether the user wants a full analysis, ask a short
   clarifying question instead of launching one.
+- **Narrate before slow tools — especially Kofi.** When you dispatch
+  `external_research` (Kofi does live web search and takes a while), FIRST write
+  one short, natural line in the same turn before the tool call — e.g. "Got it —
+  I'll send Kofi to dig into the houseplant-care market while I pull the actuals
+  history." This shows the planner what's happening instead of a silent spinner.
+  Keep it to a sentence; then make the call. A brief heads-up before any
+  multi-step tool run is welcome, but never skip it for Kofi.
 """
 
 
@@ -223,6 +241,7 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
                     "type": "usage",
                     "turns": usage["turns"],
                     "total_tokens": total_tokens(usage),
+                    "cached_tokens": usage["cache_read_input_tokens"],
                     "cost_usd": spent,
                     "today_usd": day["usd"],
                 })
@@ -284,7 +303,14 @@ You are chatting with a demand planner in a chat interface. They may arrive
 via a Lily handoff (the first message will contain Lily's analysis) or by
 starting a conversation directly.
 
-- If there's a handoff, acknowledge it and propose an outline before building.
+- For greetings and small talk, reply in one short line and stop. You are
+  talking to demand planners who already know what you do, so do NOT introduce
+  yourself or list your capabilities unless they explicitly ask. Never open
+  with a bulleted rundown of your skills.
+- If there's a handoff, acknowledge the context in a line or two, then ask ONE
+  short plain-text question for what you still need (audience, format, emphasis).
+  Don't propose an outline or force a multiple-choice card. Once they answer with
+  enough to proceed, build straight away — no approval gate.
 - If they arrive directly, ask what they'd like built and from what information.
 - After delivering a file, offer to revise or build a different format.
 """
@@ -301,7 +327,8 @@ def _dash_system_blocks() -> list[dict[str, Any]]:
 
 
 class HandoffRequest(BaseModel):
-    handoff: dict[str, Any]
+    # Lily's full analysis markdown. The server distills it into a tight brief.
+    analysis: str
 
 
 class HandoffResponse(BaseModel):
@@ -310,9 +337,15 @@ class HandoffResponse(BaseModel):
 
 @app.post("/api/dash/handoff", response_model=HandoffResponse)
 def dash_handoff(req: HandoffRequest) -> HandoffResponse:
-    """Convert a structured Lily handoff into the opening message for a Dash chat.
-    The frontend calls this, then starts a new Dash chat with the returned message."""
-    return HandoffResponse(first_message=format_handoff_message(req.handoff))
+    """Distill Lily's analysis into a clean handoff brief — the opening message for
+    a Dash chat. A cheap Haiku extraction pulls the recommendation, key findings,
+    and numbers out of her full markdown so Dash gets signal, not a wall of text.
+    The frontend calls this, then opens a Dash chat seeded with the returned brief."""
+    usage = new_usage()
+    brief = extract_handoff_brief(req.analysis, usage=usage)
+    if _BACKEND == "anthropic" and usage["turns"] > 0:
+        _record_spend(cost_usd(usage))
+    return HandoffResponse(first_message=format_handoff_message(brief))
 
 
 @app.post("/api/dash/chat/stream")
@@ -340,7 +373,7 @@ def dash_chat_stream(req: ChatRequest) -> StreamingResponse:
         try:
             reply = run_dash_loop(
                 messages, system=_dash_system_blocks(), on_event=events.put,
-                usage=usage,
+                usage=usage, session_id=req.session_id,
             )
             events.put({"type": "reply", "text": reply})
         except Exception as exc:
@@ -353,6 +386,7 @@ def dash_chat_stream(req: ChatRequest) -> StreamingResponse:
                     "type": "usage",
                     "turns": usage["turns"],
                     "total_tokens": total_tokens(usage),
+                    "cached_tokens": usage["cache_read_input_tokens"],
                     "cost_usd": spent,
                     "today_usd": day["usd"],
                 })
@@ -372,12 +406,17 @@ def dash_chat_stream(req: ChatRequest) -> StreamingResponse:
 
 @app.get("/api/dash/download/{filename}")
 def dash_download(filename: str) -> FileResponse:
-    """Download a file Dash generated (PPTX or PDF)."""
-    from agents.dash.build_pptx import OUTPUT_DIR
-    path = OUTPUT_DIR / filename
-    if not path.exists() or not path.is_file():
+    """Download a file Dash generated (PPTX, PDF, or DOCX)."""
+    from agents.dash.sandbox import OUTPUT_DIR
+    # Guard against path traversal in the filename segment.
+    path = (OUTPUT_DIR / filename).resolve()
+    if OUTPUT_DIR.resolve() not in path.parents or not path.is_file():
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")
-    media = "application/pdf" if filename.endswith(".pdf") else \
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    media = {
+        ".pdf": "application/pdf",
+        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }.get(path.suffix.lower(), "application/octet-stream")
     return FileResponse(str(path), filename=filename, media_type=media)

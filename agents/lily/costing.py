@@ -16,6 +16,15 @@ PRICE_PER_MTOK = {
     "cache_write": 3.75,  # 1.25x input (5-minute TTL)
 }
 
+# Claude Haiku 4.5 — what Kofi (web research) and the handoff distiller run on.
+# Pricing Kofi at Haiku instead of Sonnet is ~3x cheaper and accurate.
+HAIKU_PRICE_PER_MTOK = {
+    "input": 1.00,
+    "output": 5.00,
+    "cache_read": 0.10,
+    "cache_write": 1.25,
+}
+
 # Anthropic native web search (Kofi), USD per 1,000 search requests. The model
 # tokens Kofi spends are already counted via add_usage; this is the extra
 # per-search fee on top. Token pricing here is Sonnet's — Kofi may run a cheaper
@@ -55,18 +64,29 @@ def add_usage(acc: dict[str, int], response_usage: Any) -> None:
     acc["turns"] += 1
 
 
-def cost_usd(usage: dict[str, int]) -> float:
-    """Dollar cost of an accumulated usage dict."""
+def cost_usd_for(usage: dict[str, int], price: dict[str, float]) -> float:
+    """Dollar cost of a usage dict at a given per-MTok price table, plus any
+    web-search fees (model-independent)."""
     token_cost = (
-        usage["input_tokens"] * PRICE_PER_MTOK["input"]
-        + usage["output_tokens"] * PRICE_PER_MTOK["output"]
-        + usage["cache_read_input_tokens"] * PRICE_PER_MTOK["cache_read"]
-        + usage["cache_creation_input_tokens"] * PRICE_PER_MTOK["cache_write"]
+        usage["input_tokens"] * price["input"]
+        + usage["output_tokens"] * price["output"]
+        + usage["cache_read_input_tokens"] * price["cache_read"]
+        + usage["cache_creation_input_tokens"] * price["cache_write"]
     ) / 1_000_000
     search_cost = (
         usage.get("web_search_requests", 0) * WEB_SEARCH_USD_PER_1K / 1_000
     )
     return token_cost + search_cost
+
+
+def cost_usd(usage: dict[str, int]) -> float:
+    """Dollar cost at Sonnet rates (the default for Lily's main loop)."""
+    return cost_usd_for(usage, PRICE_PER_MTOK)
+
+
+def cost_usd_haiku(usage: dict[str, int]) -> float:
+    """Dollar cost at Haiku rates — accurate for Kofi and the handoff distiller."""
+    return cost_usd_for(usage, HAIKU_PRICE_PER_MTOK)
 
 
 def total_tokens(usage: dict[str, int]) -> int:

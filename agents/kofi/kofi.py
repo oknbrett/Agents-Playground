@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,17 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parents[2]))
 
 import anthropic
+
+from agents.lily.costing import (
+    add_usage,
+    cost_usd_haiku,
+    new_usage,
+    total_tokens,
+)
+
+# Every Kofi dispatch appends one JSON line here (queries, sources, tokens, cost)
+# so there's always a developer trail for what web research actually did + cost.
+TRACE_LOG = Path(os.environ.get("KOFI_TRACE_LOG", str(Path(__file__).parent / ".kofi_trace.jsonl")))
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 # Kofi summarizes search results rather than doing deep reasoning, so he defaults
@@ -139,6 +151,81 @@ def _parse_findings(text: str, query: str) -> dict[str, Any]:
     }
 
 
+# ── Tracing ─────────────────────────────────────────────────────────────────────
+
+
+def _collect_search_activity(content: Any, searches: list[dict[str, Any]]) -> None:
+    """Pull web-search queries + result sources out of one response's content
+    blocks and append them to the running `searches` list (across continuations)."""
+    for block in content:
+        btype = getattr(block, "type", None)
+        if btype == "server_tool_use" and getattr(block, "name", "") == "web_search":
+            q = (getattr(block, "input", None) or {}).get("query")
+            searches.append({"query": q, "sources": []})
+        elif btype == "web_search_tool_result":
+            results = getattr(block, "content", None)
+            sources: list[dict[str, Any]] = []
+            if isinstance(results, list):
+                for r in results:
+                    url = getattr(r, "url", None)
+                    if url:
+                        sources.append({
+                            "title": getattr(r, "title", None),
+                            "url": url,
+                            "age": getattr(r, "page_age", None),
+                        })
+            if searches:
+                searches[-1]["sources"] = sources
+            else:
+                searches.append({"query": None, "sources": sources})
+
+
+def _build_trace(query: str, searches: list[dict], kofi_usage: dict[str, int]) -> dict[str, Any]:
+    return {
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "query": query,
+        "model": KOFI_MODEL,
+        "n_searches": sum(1 for s in searches if s.get("query")),
+        "n_sources": sum(len(s.get("sources") or []) for s in searches),
+        "searches": searches,
+        "tokens": {
+            "input": kofi_usage["input_tokens"],
+            "output": kofi_usage["output_tokens"],
+            "cache_read": kofi_usage["cache_read_input_tokens"],
+            "cache_write": kofi_usage["cache_creation_input_tokens"],
+            "total": total_tokens(kofi_usage),
+            "web_search_requests": kofi_usage["web_search_requests"],
+        },
+        "cost_usd": round(cost_usd_haiku(kofi_usage), 4),
+    }
+
+
+def _log_trace(trace: dict[str, Any]) -> None:
+    """Print a readable summary to the server console AND append the full trace
+    as one JSON line to TRACE_LOG — a dev trail for every Kofi run. Must never
+    raise (it runs inside the agent loop); ASCII-only so Windows consoles
+    (cp1252) can't choke on it."""
+    try:
+        q = (trace.get("query") or "")[:80]
+        lines = [
+            f"[KOFI] {q!r} - {trace['n_searches']} searches, {trace['n_sources']} sources, "
+            f"{trace['tokens']['total']:,} tok, ${trace['cost_usd']:.4f} (haiku)"
+        ]
+        for s in trace["searches"]:
+            lines.append(f"  > search: {s.get('query')!r}")
+            for src in (s.get("sources") or [])[:10]:
+                lines.append(f"      - {src.get('title')}  {src.get('url')}")
+        # Encode-safe for whatever console is attached.
+        print("\n".join(lines).encode("ascii", "replace").decode("ascii"), flush=True)
+    except Exception:
+        pass
+    try:
+        with open(TRACE_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(trace, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 # ── The tool Lily calls ─────────────────────────────────────────────────────────
 
 
@@ -153,8 +240,10 @@ def external_research(
     `context` is an optional dict from Lily (material_id, product_family,
     current_recommendation, key_signal) that focuses the search and lets Kofi
     flag contradictions. `usage`, if given, accumulates Kofi's token + web-search
-    cost into the caller's spend accounting (see agents.lily.costing). Returns
-    the structured findings dict described in docs/KOFI.md.
+    cost into the caller's spend accounting (see agents.lily.costing).
+
+    Every run is traced: the result carries a `_trace` (queries, sources, tokens,
+    accurate Haiku cost) for the UI/log, and a summary is written to TRACE_LOG.
     """
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -170,6 +259,8 @@ def external_research(
     messages: list[dict[str, Any]] = [
         {"role": "user", "content": _format_request(query, context)}
     ]
+    kofi_usage = new_usage()  # local, priced at Haiku → accurate cost for the trace
+    searches: list[dict[str, Any]] = []
     final_text = ""
 
     for _ in range(MAX_PAUSE_CONTINUATIONS):
@@ -181,10 +272,10 @@ def external_research(
             messages=messages,
         )
 
+        add_usage(kofi_usage, response.usage)  # accurate, local
         if usage is not None:
-            from agents.lily.costing import add_usage
-
-            add_usage(usage, response.usage)
+            add_usage(usage, response.usage)   # caller's spend guard (Sonnet-priced)
+        _collect_search_activity(response.content, searches)
 
         # Preserve server_tool_use / web_search_tool_result blocks for continuation.
         messages.append({"role": "assistant", "content": response.content})
@@ -200,6 +291,9 @@ def external_research(
 
     result = _parse_findings(final_text, query)
     result.setdefault("query", query)
+    trace = _build_trace(query, searches, kofi_usage)
+    _log_trace(trace)
+    result["_trace"] = trace
     return result
 
 

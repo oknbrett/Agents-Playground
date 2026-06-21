@@ -427,6 +427,28 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 }
 .step .tick { color: var(--accent); font-size: 11px; }
 .steps.done { opacity: 0.75; }
+/* Interim "sending Kofi…" line Lily writes before a slow tool runs. */
+.body.narration { opacity: 0.85; margin-bottom: 2px; }
+.body.narration p { margin: 0; }
+
+/* Kofi web-research activity panel (dev transparency: queries, sources, cost). */
+.kofi-activity { margin: 4px 0 2px; }
+.kofi-toggle {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; text-align: left;
+  font-size: 12px; color: var(--text-muted);
+  background: var(--hover); border: 1px solid var(--border);
+  border-radius: 8px; padding: 5px 10px; cursor: pointer;
+}
+.kofi-toggle:hover { border-color: var(--accent); }
+.kofi-chevron { margin-left: auto; opacity: 0.7; }
+.kofi-detail { padding: 8px 4px 2px; display: flex; flex-direction: column; gap: 10px; }
+.kofi-search .kofi-query { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.kofi-sources { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
+.kofi-sources li { font-size: 12px; }
+.kofi-sources a { color: var(--accent); text-decoration: none; }
+.kofi-sources a:hover { text-decoration: underline; }
+.kofi-age { color: var(--text-muted); }
 .usage {
   font-size: 11.5px;
   color: var(--text-faint);

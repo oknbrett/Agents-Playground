@@ -11,3 +11,11 @@ fastapi>=0.115
 uvicorn>=0.32
 python-pptx>=1.0
 reportlab>=4.0
+python-docx>=1.1        # Dash docx tooling
+pdfplumber>=0.11        # Dash PDF text/table extraction (pdf skill)
+markdown>=3.5           # Dash markdown->HTML for report bodies
+python-multipart>=0.0.9 # FastAPI file uploads (Dash drag-drop)
+# Dash also needs Node deps: cd agents/dash && npm install  (pptxgenjs, docx)
+# Dash also needs the Anthropic doc skills (proprietary, not vendored):
+#   python agents/dash/fetch_skills.py
+# Optional, unlocks template editing + visual QA: LibreOffice (soffice) + Poppler (pdftoppm)
