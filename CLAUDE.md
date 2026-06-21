@@ -1,8 +1,8 @@
 # Agents Playground — Handoff
 
-> 🟢 **NEXT UP — Khoi integration.** The current focus is adding **Khoi**, a thinking
+> 🟢 **NEXT UP — Kofi integration.** The current focus is adding **Kofi**, a thinking
 > partner for the demand planner that reaches *outside* the data (web search + external
-> context), alongside Lily. Scoping notes + open questions: **[`docs/KHOI.md`](docs/KHOI.md)**.
+> context), alongside Lily. Scoping notes + open questions: **[`docs/KOFI.md`](docs/KOFI.md)**.
 
 > Last refreshed: 2026-06-21. Lily is now **full-scope** (forward plan **and**
 > backward forecast performance — Billy merged in) and runs on a **rich synthetic
