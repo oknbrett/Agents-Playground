@@ -407,19 +407,31 @@ function copyToClipboard(text) {
 
 const API_URL = 'http://localhost:8000/api/chat/stream'
 
+/* Human-readable progress labels for Lily's tool calls — describe the intent,
+   not the function name. */
 function stepLabel({ name, input }) {
-  const cust = input?.customer ? ` — ${input.customer}` : ''
+  const mat = input?.material_id ? ` for ${input.material_id}` : ''
+  const cust = input?.customer_code ? ` (customer ${input.customer_code})` : ''
   switch (name) {
+    case 'get_overview':
+      return 'Exploring what data is available'
+    case 'get_forecast':
+      return `Reading the demand forecast${mat}${cust}`
+    case 'demand_vs_budget':
+      return `Comparing the plan against the budget${mat}`
+    case 'inventory_coverage':
+      return `Checking inventory coverage${mat}`
+    case 'product_economics':
+      return `Looking at price and margin${mat}`
+    case 'top_skus':
+      return `Ranking the top SKUs for period ${input?.fiscal_period ?? '?'}`
+    case 'latest_actuals':
+      return `Checking the latest actuals${mat}`
+    // legacy (synthetic dataset) — kept so older transcripts still read well
     case 'load_data':
-      return 'Loading the demand dataset'
-    case 'get_sku_history':
-      return `Reading history for ${input?.sku_id ?? 'SKU'}${cust}`
-    case 'analyze_period_pattern':
-      return `Checking period ${input?.period ?? '?'} across years for ${input?.sku_id ?? 'SKU'}${cust}`
-    case 'compare_forecasts':
-      return `Scoring forecast accuracy for ${input?.sku_id ?? 'SKU'} (${input?.year ?? '?'})${cust}`
+      return 'Loading the dataset'
     default:
-      return name
+      return 'Working through the numbers'
   }
 }
 

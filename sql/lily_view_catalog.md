@@ -4,6 +4,8 @@ The full set of views Lily needs, expressed as business use cases. This is the d
 
 **Lily is forward-only.** She holds future forecast + (at most) the latest closed actuals period as a reference. She has no past forecast performance — forecast accuracy / bias is Billy's job, not Lily's.
 
+**Updated 2026-06-17** after Bart delivered the four final-shape fact tables. Resolved: **budget and inventory are their own fact tables** (`fct_budget`, `fct_inventory`) — the old "how are the streams stored" unknown is answered. **`Triad Region` = the customer** (not geography) and **`sales_org` = region / business unit** — so the customer grain is real. Full data model in `DATA_MODEL.md`.
+
 ## One view per comparison — not per horizon
 
 Each comparison is **one view covering the full horizon**. Lily filters the window (1, 3, 6, 12 months) at query time. We do **not** build separate 3-month / 6-month / 12-month views.
@@ -19,10 +21,10 @@ Each comparison exists at three grains: **by product · by customer · by produc
 | # | What vs what (+ time) | Business use case | Columns / variables | Ready |
 |---|---|---|---|---|
 | 1 | Demand vs last-year actuals — future month vs same month 1yr earlier | Sanity-check the plan against real past demand | material, customer_group, year+period, demand_qty, last_year_actual_qty, delta, delta_% | 🟣 |
-| 2 | Budget vs last-year actuals — same | Is the sales target realistic vs what sold last year | budget_qty, last_year_actual_qty, delta, delta_% | 🔵🟣 |
+| 2 | Budget vs last-year actuals — same | Is the sales target realistic vs what sold last year | budget_qty, last_year_actual_qty, delta, delta_% | 🟣 **built** (`vw_budget_vs_last_year`) — runs once prior-FY actuals load |
 | 3 | Statistical vs last-year actuals — same | Is the algorithm baseline grounded in history | statistical_qty, last_year_actual_qty, delta, delta_% | 🔵🟣 |
 | 4 | Demand vs statistical — same future month | How much the planner overrides the model, which way | demand_qty, statistical_qty, delta, delta_% | 🔵 |
-| 5 | Demand vs budget — same future month | Where my plan and sales disagree, flag inconsistencies | demand_qty, budget_qty, delta, delta_% | 🔵 |
+| 5 | Demand vs budget — same future month | Where my plan and sales disagree, flag inconsistencies | demand_qty, budget_qty, delta, delta_% | 🟢 **built** (`vw_demand_vs_budget`) — 0 rows on single-org sample, populates on real multi-org DB |
 | 6 | Statistical vs budget — same future month | Nice-to-have: is the target model-backed | statistical_qty, budget_qty, delta, delta_% | 🔵 |
 | 7 | Demand vs its own earlier version — same target month, two cycles | Did I already revise this SKU? How has it moved cycle to cycle? | material, customer_group, period, current_version, prior_version, current_qty, prior_qty, delta, delta_% | ⚪ |
 | 8 | Biggest movers — gap between two cycles, ranked by % | Which SKUs/customers shifted most since last cycle | material/customer, period, qty_delta_%, rank | ⚪ |
@@ -31,6 +33,7 @@ Each comparison exists at three grains: **by product · by customer · by produc
 | 11 | Top-N customers for a period | "Top 5 customers by forecast revenue" | customer_group, period, total_revenue, rank | 🟢 |
 | 12 | Margin / COGS / selling price per product | "COGS & price of this SKU?" + "if we sell 20k units, what's revenue?" | material, qty, revenue, cogs, unit_price, unit_cogs, margin, margin_% | 🟢 |
 | 13 | Flat-forecast check — every month identical | Spot copy-paste / placeholder forecasts | material/customer, distinct monthly values, min, max, flat flag | 🟢 |
+| BR-06 | Inventory coverage — on-hand stock vs forward demand | "How many periods of demand does current stock cover?" stockout vs overstock | sales_org, material, stock_qty_ea, avg_period_qty, coverage_periods, coverage_flag | 🟢 **built** (`vw_inventory_coverage`) — populates on org 2510 (245 shared materials). Product-level: inventory has no customer dimension. UoM-guarded to EA. |
 
 ## Dropped from Lily
 
@@ -38,6 +41,11 @@ Each comparison exists at three grains: **by product · by customer · by produc
 - **Concentration views** — no clear planner use case.
 - **Forecast vs actual, same period** — impossible: the future hasn't happened. Only forecast-vs-actual is future vs the same period last year (#1–3).
 
-## The one genuine unknown
+## What's left (was "the one genuine unknown")
 
-Rows 2–6 need the **statistical** and **budget** streams. We have no such data, and we don't know how they'll be stored — separate tables (`fct_statistical`, `fct_budget`), a `forecast_type` column inside `fct_forecast`, or extra version keys. The SQL differs completely by choice. This is the single thing that can't be derived from what Bart provided. Everything else is either runnable now or runnable once data volume catches up.
+Resolved 2026-06-17: budget and inventory are their own tables (`fct_budget`, `fct_inventory`), so rows 2, 5 and BR-06 are now **built**. What still blocks the rest:
+
+- **Statistical forecast** — *not delivered.* Forecast carries one quantity column (demand only). Rows 3, 4, 6 stay parked until a statistical stream exists; we still don't know how it'll be stored.
+- **Actuals history** — only P7.2026 loaded. Rows 1, 2 (and full year-over-year) run only once a prior fiscal year loads.
+- **A 2nd weekly forecast version** — rows 7–9 populate once a second `forecast_version_key` lands.
+- **Canonical column names** — view logic is final; reconcile names to `schema-overview.md` (a find-and-replace in `FROM` clauses) when that repo is reachable.

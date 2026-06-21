@@ -28,10 +28,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from agents.lily.lily import DEFAULT_DATA_FILE, LILY_SYSTEM_PROMPT
+from agents.lily.lily import LILY_SYSTEM_PROMPT
 
-# Auto-select backend: Groq (free) if GROQ_API_KEY is set, else Anthropic.
-if os.environ.get("GROQ_API_KEY") and not os.environ.get("ANTHROPIC_API_KEY"):
+# .env (incl. GROQ_API_KEY) is loaded on import of the agents.lily package
+# (see agents/lily/__init__.py), so it's already in os.environ here.
+
+# Auto-select backend. A present ANTHROPIC_API_KEY is an explicit opt-in to the
+# paid path. Otherwise prefer the free backends, biggest free budget first:
+# Cerebras (~1M tokens/day) > Groq (100K/day).
+if os.environ.get("ANTHROPIC_API_KEY"):
+    from agents.lily.lily import run_agent_loop
+    _BACKEND = "anthropic"
+elif os.environ.get("CEREBRAS_API_KEY"):
+    from agents.lily.lily_cerebras import run_agent_loop
+    _BACKEND = "cerebras"
+elif os.environ.get("GROQ_API_KEY"):
     from agents.lily.lily_groq import run_agent_loop
     _BACKEND = "groq"
 else:
@@ -112,8 +123,13 @@ needs analysis:
   or anything answerable from the conversation so far — just reply naturally.
   Do NOT call tools for these.
 - Only use your tools when the user's question actually requires looking at
-  the data (a SKU evaluation, a pattern check, a forecast comparison, a
-  history question). Then dig as deep as you need to.
+  the data (a SKU forecast evaluation, a demand-vs-budget check, inventory
+  coverage, product economics, or a top-SKUs ranking). Then dig as deep as
+  you need to.
+- Call get_overview at most ONCE per conversation. Once you've seen the
+  overview (regions, customers, materials, streams), you already have it —
+  do not call it again; answer directly from what it returned. For example,
+  to list the customers, read customer_codes from the overview you already have.
 - For quick factual lookups, one or two tool calls may be enough — you don't
   need the full structured recommendation block unless the user asks for a
   forecast evaluation or recommendation.
@@ -123,17 +139,12 @@ needs analysis:
 
 
 def _system_blocks() -> list[dict[str, Any]]:
-    """Base prompt plus chat-mode guidance and the data file location, so Lily
-    can call load_data without the user having to paste a file path."""
+    """Base prompt plus chat-mode guidance. Data now lives in the warehouse, so
+    Lily orients herself with get_overview — no file path needed."""
     return [
         {
             "type": "text",
-            "text": (
-                LILY_SYSTEM_PROMPT
-                + CHAT_MODE_GUIDANCE
-                + f"\nThe demand data file is located at: {DEFAULT_DATA_FILE}\n"
-                "Use this path when calling load_data unless the user gives another."
-            ),
+            "text": LILY_SYSTEM_PROMPT + CHAT_MODE_GUIDANCE,
             "cache_control": {"type": "ephemeral"},
         }
     ]

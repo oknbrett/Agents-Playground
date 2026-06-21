@@ -1,16 +1,21 @@
-"""Lily — demand planning reasoning agent (Groq / Llama 3.3 70B).
+"""Lily — demand planning reasoning agent (Cerebras, free 1M tokens/day).
 
-Same reasoning logic, system prompt, and tools as lily.py but runs on
-Groq's free API using Llama 3.3 70B. Zero cost, no local hardware needed.
+Same reasoning logic, system prompt, and tools as lily.py, run on Cerebras's
+OpenAI-compatible inference API. Free tier: ~1M tokens/day, 30 req/min — far
+more headroom than Groq's 100K/day for extensive testing.
+
+Default model is gpt-oss-120b (OpenAI's open model — strong at tool calling and
+reasoning). Override with CEREBRAS_MODEL.
 
 Required environment variable:
-    GROQ_API_KEY  — get a free key at https://console.groq.com
+    CEREBRAS_API_KEY  — get a free key at https://cloud.cerebras.ai
 
 Usage:
-    python agents/lily/lily_groq.py --sku SKU001
-    python agents/lily/lily_groq.py --sku all
-    python agents/lily/lily_groq.py --sku SKU006 --customer Carrefour
-    python agents/lily/lily_groq.py --file path/to/custom.xlsx --sku SKU001
+    python agents/lily/lily_cerebras.py --sku UNI40
+    python agents/lily/lily_cerebras.py --sku all
+
+Note: the free tier currently caps context at 8,192 tokens, so completions are
+kept short and the loop is meant for single-SKU questions, not huge transcripts.
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parents[2]))
 
-from groq import Groq
+from openai import OpenAI
 
 from agents.lily.lily import (
     LILY_SYSTEM_PROMPT,
@@ -37,12 +42,14 @@ from agents.lily.lily import (
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-LOOP_MODEL = "llama-3.3-70b-versatile"
-MAX_TOKENS = 4096
+BASE_URL = "https://api.cerebras.ai/v1"
+LOOP_MODEL = os.environ.get("CEREBRAS_MODEL", "gpt-oss-120b")
+MAX_TOKENS = 2048           # leave room under the free tier's 8,192-token context cap
 MAX_TOOL_TURNS = 20
+TOOL_CALL_RETRIES = 3       # re-sample on malformed tool-call generations
 
-# ── Convert Anthropic tool format → OpenAI tool format ────────────────────────
-# Anthropic uses "input_schema"; OpenAI/Groq uses "parameters" — same JSON Schema.
+
+# ── Anthropic tool format → OpenAI tool format (Cerebras is OpenAI-compatible) ──
 
 def _to_openai_tools(anthropic_tools: list[dict]) -> list[dict]:
     return [
@@ -60,28 +67,22 @@ def _to_openai_tools(anthropic_tools: list[dict]) -> list[dict]:
 
 OPENAI_TOOL_DEFINITIONS = _to_openai_tools(TOOL_DEFINITIONS)
 
-# ── Agentic loop ───────────────────────────────────────────────────────────────
 
-def _get_client() -> Groq:
-    api_key = os.environ.get("GROQ_API_KEY")
+def _get_client() -> OpenAI:
+    api_key = os.environ.get("CEREBRAS_API_KEY")
     if not api_key:
         raise RuntimeError(
-            "GROQ_API_KEY is not set.\n"
-            "Get a free key at https://console.groq.com and run:\n"
-            "  export GROQ_API_KEY=your_key"
+            "CEREBRAS_API_KEY is not set.\n"
+            "Get a free key at https://cloud.cerebras.ai and add to .env:\n"
+            "  CEREBRAS_API_KEY=your_key"
         )
-    return Groq(api_key=api_key)
+    return OpenAI(api_key=api_key, base_url=BASE_URL)
 
 
-TOOL_CALL_RETRIES = 3  # Groq/Llama sometimes emits malformed tool syntax; re-sample.
+def _create_with_retry(client: OpenAI, full_messages: list[Any]):
+    """Call Cerebras, retrying transient 'tool_use_failed' formatting errors.
 
-
-def _create_with_retry(client: Groq, full_messages: list[Any]):
-    """Call Groq, retrying transient 'tool_use_failed' formatting errors.
-
-    Llama occasionally emits a non-conformant function call (e.g.
-    `<function=foo({...})>`), which Groq rejects with a 400 tool_use_failed.
-    That generation isn't added to the history, so simply re-sampling usually
+    The generation that failed isn't added to history, so re-sampling usually
     succeeds. Any other error is re-raised immediately.
     """
     last_exc: Exception | None = None
@@ -90,34 +91,30 @@ def _create_with_retry(client: Groq, full_messages: list[Any]):
             return client.chat.completions.create(
                 model=LOOP_MODEL,
                 max_tokens=MAX_TOKENS,
-                temperature=0,  # steadier tool formatting + reasoning
+                temperature=0,
                 tools=OPENAI_TOOL_DEFINITIONS,
                 messages=full_messages,
             )
-        except Exception as exc:  # inspect message; retry only the tool-format failure
+        except Exception as exc:
             if "tool_use_failed" not in str(exc) and "Failed to call a function" not in str(exc):
                 raise
             last_exc = exc
             time.sleep(0.4 * (attempt + 1))
-    raise last_exc  # retries exhausted
+    raise last_exc
 
+
+# ── Agentic loop ───────────────────────────────────────────────────────────────
 
 def run_agent_loop(
     messages: list[Any],
     system: list[dict] | None = None,
     on_event: Any = None,
-    usage: dict | None = None,  # ignored — Groq is free
+    usage: dict | None = None,  # ignored — Cerebras free tier has no token cost
 ) -> str:
-    """Drive the tool-calling loop over an existing message history.
-
-    Drop-in replacement for lily.run_agent_loop so server.py can use either
-    backend. `system` accepts Anthropic-style blocks (list of {"type","text",...})
-    or None (falls back to LILY_SYSTEM_PROMPT). `usage` is accepted but ignored
-    since Groq has no token cost.
-    """
+    """Drive the tool-calling loop. Drop-in replacement for lily.run_agent_loop so
+    server.py can use this backend interchangeably."""
     client = _get_client()
 
-    # Extract plain text from Anthropic-style system blocks if provided
     if system:
         system_text = "".join(b.get("text", "") for b in system if b.get("type") == "text")
     else:
@@ -128,7 +125,6 @@ def run_agent_loop(
 
     for _turn in range(MAX_TOOL_TURNS):
         response = _create_with_retry(client, full_messages)
-
         choice = response.choices[0]
         full_messages.append(choice.message)
 
@@ -156,7 +152,6 @@ def run_agent_loop(
 
 
 def run_lily(user_message: str) -> str:
-    """Run the agent loop from a single user message (CLI entry point)."""
     messages: list[Any] = [{"role": "user", "content": user_message}]
     return run_agent_loop(messages)
 
@@ -165,33 +160,17 @@ def run_lily(user_message: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Lily — demand planning reasoning agent (Groq / Llama 3.3 70B)"
+        description=f"Lily — demand planning reasoning agent (Cerebras / {LOOP_MODEL})"
     )
-    parser.add_argument(
-        "--sku",
-        required=True,
-        help="SKU to analyse (e.g. SKU001) or 'all' for all SKUs.",
-    )
-    parser.add_argument(
-        "--customer",
-        default=None,
-        help="Optional: filter to one customer (e.g. Carrefour).",
-    )
-    parser.add_argument(
-        "--file",
-        default=DEFAULT_DATA_FILE,
-        help="Path to the demand data file. Defaults to data/demand_data.xlsx.",
-    )
+    parser.add_argument("--sku", required=True, help="SKU/material to analyse, or 'all'.")
+    parser.add_argument("--customer", default=None, help="Optional: filter to one customer code.")
+    parser.add_argument("--file", default=DEFAULT_DATA_FILE, help="(unused; data is in the warehouse)")
     args = parser.parse_args()
 
     user_message = _build_user_message(args.sku, args.customer, args.file)
-
-    print(f"Lily (Groq / {LOOP_MODEL}) is analysing {args.sku}"
-          + (f" / {args.customer}" if args.customer else "")
-          + " ...\n")
-
-    result = run_lily(user_message)
-    print(result)
+    print(f"Lily (Cerebras / {LOOP_MODEL}) is analysing {args.sku}"
+          + (f" / {args.customer}" if args.customer else "") + " ...\n")
+    print(run_lily(user_message))
 
 
 if __name__ == "__main__":

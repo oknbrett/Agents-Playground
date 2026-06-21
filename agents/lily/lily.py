@@ -37,30 +37,43 @@ DEFAULT_DATA_FILE = str(Path(__file__).parents[2] / "data" / "demand_data.xlsx")
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 
-LILY_SYSTEM_PROMPT = """You are Lily, a demand planning analyst. You help demand \
-planners sanity-check the forward forecast plan — top SKUs and customers, \
-product economics, and how the demand forecast compares to the statistical \
-baseline and the business plan — by reading pre-computed `lily` schema views. \
-You read figures your tools have already calculated rather than computing \
-them yourself.
+LILY_SYSTEM_PROMPT = """You are Lily, a demand planning analyst. You give demand \
+planners the full picture of a product: the forward plan — top SKUs and \
+customers, product economics, demand vs the statistical baseline and the budget, \
+inventory coverage — AND how recent forecasts have actually performed (accuracy \
+and bias). You read figures your tools have already calculated rather than \
+computing them yourself.
+
+## Fiscal calendar
+
+The fiscal year starts in NOVEMBER: P1=Nov, P4=Feb, P7=May, P12=Oct. "Now" is the \
+period just after the latest closed actuals period; that latest closed period is \
+your anchor for anything "recent". Translate periods to months when it helps the \
+planner (e.g. "P7 = May").
 
 ## Hard guardrails
 
-- You are forward-looking only. You evaluate the plan against history, \
-budget, and the statistical baseline — never forecast accuracy or bias. How \
-good a forecast has historically been is a different question, owned \
-elsewhere; if asked, say so plainly and redirect rather than improvising an \
-accuracy judgment.
-- You do not cover inventory or stock coverage — that is a separate domain \
-from demand planning.
+- Forecast accuracy and bias ARE your job now. Measure on a LAG-2 basis (Evergreen's \
+operational lag) unless asked otherwise — WMAPE for accuracy, signed (F−A)/A for \
+bias. The one thing still not yours: you read pre-computed accuracy, you don't \
+re-derive a different metric by hand.
 - Never assert that a pattern, trend, or issue exists unless the data you \
 actually retrieved shows it. If you're inferring something the data doesn't \
 directly state — e.g. calling something a "trend" when you've only confirmed \
 it in one year — say plainly that it's your inference, not a fact, and show \
 what would confirm or break it.
-- If a question falls outside your scope, or outside what your current views \
-can answer, say plainly that it isn't available and why. An honest "not \
-available yet" is always correct; a guess is not.
+- If a question falls outside what your views can answer, say plainly that it \
+isn't available and why. An honest "not available" is always correct; a guess is not.
+
+## What to focus on (triage)
+
+When a planner asks what to focus on right now, pull the per-SKU performance scan \
+(recent accuracy/bias + materiality at the latest closed period) and decide the \
+shortlist YOURSELF — don't just echo a sorted list. Rank by revenue impact by \
+default (a big SKU you got wrong matters more than a tiny one), but SAY that you \
+ranked by revenue, and note that volume would reorder it if supply strain is the \
+concern. For each pick give the why: the revenue at stake and the specific \
+performance problem (e.g. "forecast running 13% high three periods straight").
 
 ## Communication style
 
@@ -85,108 +98,256 @@ before answering anything that requires data.
 
 # ── Anthropic tool definitions ─────────────────────────────────────────────────
 
+_MATERIAL = {"type": "string", "description": "The SKU / material id, e.g. 'UNI40' or '10491'."}
+_SALES_ORG = {"type": "integer", "description": "Optional. Region / business-unit code, e.g. 2510."}
+_CUSTOMER = {"type": "string", "description": "Optional. Customer code (Triad Region), e.g. 'FA'."}
+
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
-        "name": "load_data",
+        "name": "get_overview",
         "description": (
-            "Load the demand planning dataset from a file path and return a summary "
-            "of what is available: which SKUs, customers, regions, and years are "
-            "present, plus how many periods have actuals vs. zeros. Call this first."
+            "Orient yourself: what the warehouse holds right now — the regions "
+            "(sales_orgs), how many customers and materials, the loaded forecast "
+            "version and its period horizon, the latest closed actuals period, and "
+            "which data streams exist (demand forecast, budget, inventory, actuals; "
+            "note statistical forecast is not available). Call this first."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_forecast",
+        "description": (
+            "The forward demand forecast for a SKU, period by period, with revenue, "
+            "margin and unit price pre-computed, plus a shape summary (total, min, "
+            "max, average, and whether the forecast is flat/placeholder). Aggregates "
+            "across customers unless customer_code is given. Your primary tool."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "file_path": {
-                    "type": "string",
-                    "description": "Path to the Excel (.xlsx) or CSV demand data file.",
-                }
+                "material_id": _MATERIAL,
+                "sales_org": _SALES_ORG,
+                "customer_code": _CUSTOMER,
             },
-            "required": ["file_path"],
+            "required": ["material_id"],
         },
     },
     {
-        "name": "get_sku_history",
+        "name": "demand_vs_budget",
         "description": (
-            "Return the full historical and forecast time series for a given SKU. "
-            "Returns actuals, dp_forecast, stat_forecast, and business_plan for "
-            "every period and year. Optionally filtered to one customer. "
-            "Use this to identify trends, year-over-year changes, and forecast "
-            "deviations. The summary includes historical MAPE for each forecast source."
+            "Compare the demand forecast against the sales budget (target) per "
+            "future period for a SKU: demand_qty vs budget_qty, the delta and "
+            "delta %, plus how many periods the plan sits above vs below target. "
+            "Use this to see where the plan and the target disagree."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "sku_id": {
-                    "type": "string",
-                    "description": "The SKU identifier, e.g. 'SKU001'.",
-                },
-                "customer": {
-                    "type": "string",
-                    "description": (
-                        "Optional. If provided, filter to one customer "
-                        "(e.g. 'Carrefour'). If omitted, aggregates across all customers."
-                    ),
-                },
+                "material_id": _MATERIAL,
+                "sales_org": _SALES_ORG,
+                "customer_code": _CUSTOMER,
             },
-            "required": ["sku_id"],
+            "required": ["material_id"],
         },
     },
     {
-        "name": "analyze_period_pattern",
+        "name": "demand_vs_statistical",
         "description": (
-            "For a specific period number (1–13), return what actually happened in "
-            "that period across all available years side by side. "
-            "Pre-computes the average of all other periods (baseline) and the ratio "
-            "of this period to that baseline per year. "
-            "Use this when you spot an unusual period in the history to check "
-            "whether it recurs."
+            "Compare the planner's demand forecast against the naive statistical "
+            "baseline per future period for a SKU: demand_qty vs statistical_qty, "
+            "the override (delta) and override %, plus a flag (PLANNER RAISED / "
+            "PLANNER LOWERED / IN LINE). The gap IS the planner's manual judgment — "
+            "use it to see where and how much a human moved off the model, and to "
+            "question overrides that aren't backed by a trend."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "sku_id": {
-                    "type": "string",
-                    "description": "The SKU identifier.",
-                },
-                "period": {
-                    "type": "integer",
-                    "description": "Period number 1–13.",
-                },
-                "customer": {
-                    "type": "string",
-                    "description": "Optional. Filter to one customer.",
-                },
+                "material_id": _MATERIAL,
+                "sales_org": _SALES_ORG,
+                "customer_code": _CUSTOMER,
             },
-            "required": ["sku_id", "period"],
+            "required": ["material_id"],
         },
     },
     {
-        "name": "compare_forecasts",
+        "name": "inventory_coverage",
         "description": (
-            "Compare the accuracy of DP forecast, statistical forecast, and business "
-            "plan against actuals for a given SKU and year. Only periods with "
-            "non-zero actuals are included. Returns MAPE and bias for each source, "
-            "plus which source performed best and an interpretation hint. "
-            "Use this to judge whether the DP adds value over the stat model, "
-            "and whether the business plan is directionally accurate."
+            "Current on-hand stock vs forward demand for a SKU (product level): "
+            "stock_qty_ea, average period demand, coverage_periods (stock / avg "
+            "demand), and a flag — STOCKOUT RISK (<1 period), OVERSTOCK (>12), or "
+            "OK. EA units only; flags materials that also hold non-EA stock."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "sku_id": {
-                    "type": "string",
-                    "description": "The SKU identifier.",
-                },
-                "year": {
-                    "type": "integer",
-                    "description": "Year to evaluate (2023 or 2024; 2025 is partial).",
-                },
-                "customer": {
-                    "type": "string",
-                    "description": "Optional. Filter to one customer.",
-                },
+                "material_id": _MATERIAL,
+                "sales_org": _SALES_ORG,
             },
-            "required": ["sku_id", "year"],
+            "required": ["material_id"],
+        },
+    },
+    {
+        "name": "product_economics",
+        "description": (
+            "Per-product economics across the horizon: total quantity, revenue, "
+            "COGS, margin, margin %, average unit selling price and unit COGS. Use "
+            "for 'what's the price/COGS of this SKU?' and 'if we sell N units, "
+            "what's the revenue?' (N * avg_selling_price_eur)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "material_id": _MATERIAL,
+                "sales_org": _SALES_ORG,
+            },
+            "required": ["material_id"],
+        },
+    },
+    {
+        "name": "top_skus",
+        "description": (
+            "The top-N SKUs in a given future period, ranked by quantity or "
+            "revenue. Use for 'top 5 SKUs by units expected in P8 next year'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "fiscal_year": {"type": "integer", "description": "Fiscal year, e.g. 2026."},
+                "fiscal_period": {"type": "integer", "description": "Fiscal period 1–12."},
+                "sales_org": _SALES_ORG,
+                "by": {
+                    "type": "string",
+                    "enum": ["qty", "revenue"],
+                    "description": "Rank by 'qty' (default) or 'revenue'.",
+                },
+                "n": {"type": "integer", "description": "How many to return (default 5)."},
+            },
+            "required": ["fiscal_year", "fiscal_period"],
+        },
+    },
+    {
+        "name": "family_scan",
+        "description": (
+            "Cross-FAMILY rollup in one call: every product family (L1/L2) with its "
+            "trailing-12m revenue, demand-vs-statistical override %, average YoY "
+            "growth, and SKU count. Use this FIRST for 'biggest family' / 'which "
+            "category' questions, then drill into a family with divergence_scan. "
+            "Ordered by revenue by default ('override' or 'growth' also)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "order_by": {"type": "string", "enum": ["revenue", "override", "growth"],
+                             "description": "Order families by (default 'revenue')."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "divergence_scan",
+        "description": (
+            "Cross-SKU scan in ONE call — every SKU's demand-vs-statistical override "
+            "(whole horizon AND latest forecast year for escalation), demand-vs-budget "
+            "gap, trailing-12m revenue, YoY actual growth, and family. Use this "
+            "INSTEAD of looping demand_vs_statistical SKU-by-SKU — it lets you reason "
+            "over the complete set, not a sample. Optionally filter to one family "
+            "(L2 category). order_by: 'revenue' (default), 'override', "
+            "'override_latest_year', 'budget', 'growth'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "category": {"type": "string", "description": "Optional L2 category to filter to (a product family)."},
+                "order_by": {"type": "string",
+                             "enum": ["revenue", "override", "override_latest_year", "budget", "growth"],
+                             "description": "How to order (default 'revenue')."},
+                "n": {"type": "integer", "description": "How many SKUs to return (default 50)."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "forecast_performance",
+        "description": (
+            "Forecast ACCURACY and BIAS for a SKU — how recent forecasts actually "
+            "performed vs what sold, on a lag-2 basis by default. Returns WMAPE "
+            "(volume-weighted error), signed bias (positive = over-forecast), and "
+            "the bias per period so a persistent one-directional drift is visible. "
+            "Aggregates across customers unless customer_code is given. Use for "
+            "'how accurate / how biased is this SKU's forecast?'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "material_id": _MATERIAL,
+                "sales_org": _SALES_ORG,
+                "customer_code": _CUSTOMER,
+                "lag": {"type": "integer", "description": "Forecast lag in periods (default 2, Evergreen's operational basis)."},
+            },
+            "required": ["material_id"],
+        },
+    },
+    {
+        "name": "sku_performance_scan",
+        "description": (
+            "The triage table for 'what should I focus on right now?' — per-SKU "
+            "recent accuracy/bias (last 3 closed periods, lag-2) plus materiality "
+            "(trailing-12m revenue & volume) at the latest closed period. Returns "
+            "the candidate set ordered by 'revenue' (default), 'volume', 'wmape', "
+            "or 'bias'. These are decision INPUTS — you pick the focus shortlist "
+            "and state the basis you ranked on; don't just echo the order."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sales_org": _SALES_ORG,
+                "order_by": {
+                    "type": "string",
+                    "enum": ["revenue", "volume", "wmape", "bias"],
+                    "description": "How to order the candidates (default 'revenue').",
+                },
+                "n": {"type": "integer", "description": "How many SKUs to return (default 25)."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "actuals_history",
+        "description": (
+            "The full actuals sales history for a SKU — real sold quantity per "
+            "period across all closed periods (multiple years), with per-year "
+            "totals and year-over-year growth. Use this to judge whether a forward "
+            "forecast or planner override is backed by what actually happened "
+            "(e.g. a +20% plan against two years of flat actuals). Aggregates "
+            "across customers unless customer_code is given. This is raw sales "
+            "history — NOT forecast accuracy or bias (that's Billy's domain)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "material_id": _MATERIAL,
+                "sales_org": _SALES_ORG,
+                "customer_code": _CUSTOMER,
+            },
+            "required": ["material_id"],
+        },
+    },
+    {
+        "name": "latest_actuals",
+        "description": (
+            "The single most recent closed-period actuals for a SKU — a reference "
+            "anchor only (not performance reporting). May be empty if the SKU is "
+            "not in the latest closed period."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "material_id": _MATERIAL,
+                "sales_org": _SALES_ORG,
+                "customer_code": _CUSTOMER,
+            },
+            "required": ["material_id"],
         },
     },
 ]
@@ -194,10 +355,19 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
 # ── Tool dispatch ──────────────────────────────────────────────────────────────
 
 TOOL_DISPATCH: dict[str, Any] = {
-    "load_data": tools_module.load_data,
-    "get_sku_history": tools_module.get_sku_history,
-    "analyze_period_pattern": tools_module.analyze_period_pattern,
-    "compare_forecasts": tools_module.compare_forecasts,
+    "get_overview": tools_module.get_overview,
+    "get_forecast": tools_module.get_forecast,
+    "demand_vs_budget": tools_module.demand_vs_budget,
+    "demand_vs_statistical": tools_module.demand_vs_statistical,
+    "family_scan": tools_module.family_scan,
+    "divergence_scan": tools_module.divergence_scan,
+    "inventory_coverage": tools_module.inventory_coverage,
+    "product_economics": tools_module.product_economics,
+    "top_skus": tools_module.top_skus,
+    "forecast_performance": tools_module.forecast_performance,
+    "sku_performance_scan": tools_module.sku_performance_scan,
+    "actuals_history": tools_module.actuals_history,
+    "latest_actuals": tools_module.latest_actuals,
 }
 
 
@@ -300,18 +470,13 @@ def run_lily(user_message: str) -> str:
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
-def _build_user_message(sku: str, customer: str | None, file_path: str) -> str:
-    if sku.lower() == "all":
-        sku_clause = "all SKUs in the dataset (SKU001 through SKU008)"
-    else:
-        sku_clause = f"SKU {sku}"
-
+def _build_user_message(sku: str, customer: str | None, file_path: str | None = None) -> str:
+    sku_clause = "all products in the overview" if sku.lower() == "all" else f"product {sku}"
     customer_clause = f" for customer {customer}" if customer else ""
 
     return (
-        f"Please evaluate the demand forecast{customer_clause} for {sku_clause}.\n"
-        f"The data file is at: {file_path}\n\n"
-        "Start by loading the data, then analyse each SKU thoroughly using all "
+        f"Please evaluate the demand forecast{customer_clause} for {sku_clause}.\n\n"
+        "Start with get_overview to see what data exists, then analyse using the "
         "available tools before producing your structured recommendation."
     )
 

@@ -1,6 +1,34 @@
 # PROGRESS.md — Lily Web App: Status & Handoff
 
-> Last updated: 2026-06-12 · Repo: `oknbrett/agents-playground`
+> Last updated: 2026-06-21 · Repo: `oknbrett/agents-playground`
+
+## 2026-06-21 — Synthetic dataset + full-scope Lily (Billy merged)
+
+Big session. Lily went from forward-only on a thin SAP sample to **full-scope on a
+rich synthetic dataset**. Highlights (newest first):
+
+- **Cross-SKU/family scan tools** (`family_scan`, `divergence_scan`) + views
+  (`vw_sku_divergence`, `vw_family_divergence`): broad questions ("biggest family,
+  where does demand diverge") answered in ~2 calls over the COMPLETE set instead of
+  looping SKU-by-SKU (which sampled and cost ~$0.31/question). 13 tools total.
+- **Billy merged in** — forecast accuracy & bias are now Lily's. New `fct_forecast_history`
+  (lagged forecasts of closed periods, lags 1/2/3, lifecycle-driven error), views
+  `vw_forecast_actual_matched / _accuracy / _bias`, `vw_sku_performance`, and tools
+  `forecast_performance`, `sku_performance_scan`. **Lag-2** is the operational basis;
+  WMAPE + signed bias. Accuracy tracks lifecycle (declining over-forecast, growing under).
+- **Statistical baseline stream** added (`fct_statistical`, `vw_statistical`,
+  `vw_demand_vs_statistical`) — demand − statistical = planner override.
+- **Full 3-year actuals history** exposed (`vw_actuals_history`, `actuals_history`).
+- **Synthetic generator** `sql/generate_synthetic.py`: ~1.14M rows, 200 SKUs, 25
+  customers, 1 region, **product hierarchy L1–L4** (`dim_product`), seasonality,
+  lifecycles, divergence/traps. **Fiscal year = November.**
+- Token hygiene: `demand_vs_*` tools aggregate to period grain (600→24 rows).
+- Fixed a latent view bug (`vw_forecast_version_delta` RANK → DENSE_RANK).
+- Prompt + `demand-planning-analysis` skill (v0.3.0) rewritten for full scope,
+  fiscal calendar, lag-2, and the scan-first workflow.
+
+Note: the live `lily_local.duckdb` is now the **synthetic** dataset. The real SAP
+sample is still loadable via `build_local_db.py` (overwrites the same file).
 
 ## What this is
 
@@ -83,6 +111,24 @@ The architecture is domain-agnostic. What transfers to any future analysis agent
 3. Scaling design with the team: pre-aggregated views + two-tier screening (see Scaling section)
 4. Polish: conversation persistence, markdown rendering of replies
 5. Deploy internally (server/domain TBD); Teams tab or Foundry Hosted Agent if needed later
+
+## Real data + SQL serving layer (2026-06-17 → 18)
+
+Bart delivered the four final-shape fact tables (`Forecast / Actuals / Budget / Inventory.xlsx`). This replaces the synthetic Excel as Lily's source. Full column-level reference: **`sql/DATA_MODEL.md`**.
+
+**What the real data is:**
+- `sales_org` = **region / business unit** (today `2510` ≈ Netherlands / Evergreen Pokon; names later). `Triad Region` = **the customer** (not geography). Material = SKU (string).
+- **Budget and inventory are their own fact tables** — the old "how are the streams stored" question is answered. **Statistical forecast is NOT delivered** (forecast = demand quantity only), so demand-vs-statistical stays parked. Actuals = one closed period (no history yet).
+- The four files are **single-org shape samples** (fc 2510 / ac 1010 / bg 3710 / inv 8 orgs), so cross-stream comparisons are correct but empty on the sample except **inventory↔forecast** (shared org 2510).
+
+**What was built:**
+- **`sql/lily_views_runnable.sql`** — corrected + extended views, **dialect-portable** (same SQL runs on DuckDB now and Bart's Postgres later). New: `vw_budget`, `vw_inventory_latest`, and three comparisons — `vw_demand_vs_budget`, `vw_budget_vs_last_year`, `vw_inventory_coverage` (BR-06, stockout/overstock flags, UoM-guarded to EA).
+- **`sql/build_local_db.py`** — loads the four xlsx → local **DuckDB** (`sql/lily_local.duckdb`, gitignored), derives integer period/version keys, applies views, verifies. Chose DuckDB as the local stand-in: pip-only, no server, reads Excel directly; production stays Postgres (connection swap only). Verified: inventory coverage 245 materials (42 stockout-risk, 52 overstock).
+- **`agents/lily/tools.py` rewritten** — from pandas/Excel to read-only DuckDB view queries. New forward-only tool set: `get_overview`, `get_forecast`, `demand_vs_budget`, `inventory_coverage`, `product_economics`, `top_skus`, `latest_actuals` (`load_data` kept as a back-compat alias). All unit-tested without model calls. The old history/MAPE tools were removed — they assumed history + a statistical stream Lily no longer has.
+
+**Still to wire (not done):** `lily.py` system prompt + tool JSON schemas + dispatch dict still reference the old tools (`get_sku_history` / `analyze_period_pattern` / `compare_forecasts`) — these break a live run until updated to the new tool set. Same for `lily_msft.py` and `server.py` guidance. No agent loop was run (API credit guard).
+
+**Open design thread:** persistent, team-shared memory for Lily (qualitative context — promotions, one-off events, decisions — that the numbers can't explain). Being planned in `docs/MEMORY_DESIGN.md`.
 
 ## Running it locally (Mac)
 
