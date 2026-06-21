@@ -151,9 +151,8 @@ python agents/kofi/kofi.py --query "Dutch garden-product demand outlook spring 2
   v1 is a single search-and-summarize pass bounded by `KOFI_MAX_SEARCHES`.
 - **Caching** — repeated "NL garden seasonality" lookups across SKUs could share a
   cached result with a TTL. Not built yet.
-- **Surface Kofi in the UI** — the web app currently streams Lily's `tool_call`
-  events generically; consider a distinct "Kofi is researching…" indicator and
-  rendering his cited sources.
+- ~~**Surface Kofi in the UI**~~ ✅ Done — the frontend shows "Kofi is researching:
+  {query}..." as a distinct step label when Lily calls `external_research`.
 
 ## Status
 

@@ -1,13 +1,14 @@
 # Agents Playground — Handoff
 
-> 🟢 **NEXT UP — Dash integration.** The current focus is adding **Dash**, a
-> **report & PPTX builder** the planner can hand off to from Lily's chat (or start
-> directly). Dash is a separate chat agent — no DB access, works from Lily's handoff
-> doc or user instructions. Outputs PPTX and PDF. Design doc:
-> **[`docs/DASH.md`](docs/DASH.md)**.
+> 🟢 **Multi-agent architecture built.** Three agents are wired up:
+> - **Lily** — full-scope demand-planning analyst (15 tools). The brain.
+> - **Kofi** v1 — external web-research tool Lily dispatches (`external_research`).
+>   See **[`docs/KOFI.md`](docs/KOFI.md)**.
+> - **Dash** v1 — report & PPTX/PDF builder. Separate chat agent, no DB access.
+>   See **[`docs/DASH.md`](docs/DASH.md)**.
 >
-> **Kofi v1 is done** — external web-research tool Lily dispatches. Parked; see
-> **[`docs/KOFI.md`](docs/KOFI.md)**.
+> Frontend supports agent switching, ask_planner choice cards, file upload (Dash),
+> and handoff from Lily to Dash. **Needs `ANTHROPIC_API_KEY` for live testing.**
 
 > Last refreshed: 2026-06-21. Lily is now **full-scope** (forward plan **and**
 > backward forecast performance — Billy merged in) and runs on a **rich synthetic
@@ -91,7 +92,7 @@ Semantics (apply to both): **`sales_org` = region/BU** (`2510` ≈ NL / Evergree
 Read-only queries against the `lily.*` views (DuckDB now, Postgres later — isolated
 in one `_connect()`). All return decision-ready JSON; Lily never does SQL or math.
 
-13 tools (defs + dispatch in `lily.py`, shared by all backends):
+15 tools (defs + dispatch in `lily.py`, shared by all backends):
 
 | Tool | What it returns |
 |---|---|
@@ -108,6 +109,8 @@ in one `_connect()`). All return decision-ready JSON; Lily never does SQL or mat
 | `sku_performance_scan(…)` | **Triage inputs** — per-SKU recent accuracy/bias + materiality (for "what to focus on"). |
 | `family_scan(…)` | **Cross-family rollup** in one call — revenue, override %, YoY growth per family. |
 | `divergence_scan(category?, …)` | **Cross-SKU scan** in one call — every SKU's override (+escalation), budget gap, revenue, YoY. Use instead of looping. |
+| `external_research(query, context?)` | **Kofi dispatch** — web-search research. Returns structured findings with citations. Runs on Haiku. |
+| `ask_planner(question, options)` | **Pause and ask** the planner to choose a direction. Shared tool from `agents/shared/`. |
 
 `load_data()` is a thin back-compat alias of `get_overview`. For broad
 ("biggest family / where does it diverge") questions Lily uses `family_scan` →
@@ -236,17 +239,26 @@ agents-playground/
 │   ├── build_local_db.py         ← load the real SAP xlsx sample instead
 │   └── RETROSPECTIVE.md
 ├── docs/
-│   └── MEMORY_DESIGN.md          ← team-shared memory plan
+│   ├── MEMORY_DESIGN.md          ← team-shared memory plan
+│   ├── KOFI.md                   ← Kofi design doc (v1 built)
+│   └── DASH.md                   ← Dash design doc (v1 built)
 ├── evals/                    ← eval harness (synthetic-era; needs rework for new data)
-├── web/                      ← React + Vite chat UI
+├── web/                      ← React + Vite chat UI (multi-agent: Lily + Dash)
+│   └── src/
+│       ├── App.jsx               ← agent switcher, ask_planner cards, handoff, file upload
+│       └── index.css             ← all component styles
+├── agents/shared/
+│   └── __init__.py           ← ask_planner tool def + is_ask_planner_call (shared by Lily & Dash)
 ├── agents/lily/
 │   ├── tools.py              ← read-only view queries (shared by all backends)
-│   ├── lily.py               ← Anthropic (Claude) — owns prompt + tool defs (incl. external_research)
+│   ├── lily.py               ← Anthropic (Claude) — owns prompt + 15 tool defs
 │   ├── lily_groq.py          ← Groq (Llama, free)
 │   ├── lily_msft.py          ← Microsoft Agent Framework (GPT-5 / Foundry)
 │   └── costing.py            ← pricing + daily spend cap (tokens + web-search fees)
 ├── agents/kofi/
-│   └── kofi.py               ← external web-research agent; Lily's external_research tool (Anthropic web search)
+│   └── kofi.py               ← external web-research tool; Lily's external_research (Anthropic web search)
 └── agents/dash/
-    └── dash.py               ← report & PPTX/PDF builder; separate chat agent, no DB access
+    ├── dash.py               ← report & PPTX/PDF builder; separate chat agent, no DB access
+    ├── build_pptx.py         ← python-pptx slide builder (4 layouts, Evergreen palette)
+    └── build_pdf.py          ← reportlab PDF builder (6 section types)
 ```

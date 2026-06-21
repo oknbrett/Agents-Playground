@@ -1,6 +1,7 @@
-# Dash — report & presentation builder (DESIGNED · building)
+# Dash — report & presentation builder (BUILT · v1)
 
-> Last updated: 2026-06-21. Design settled in session with Brett.
+> Last updated: 2026-06-21. v1 built: agent loop, PPTX/PDF generation, file
+> upload, ask_planner, full frontend integration with agent switcher and handoff.
 
 ## What Dash is
 
@@ -100,17 +101,21 @@ revisions in the same chat.
 | **PPTX** (PowerPoint) | `python-pptx` | Primary output. Clean, professional slides. |
 | **PDF** (report) | `reportlab` or `weasyprint` | Written reports / one-pagers. |
 
-## Dash's tools (internal)
+## Dash's tools
 
-Dash doesn't call external data tools, but he has his own document-building tools:
+4 tools defined in `agents/dash/dash.py`:
 
 | Tool | What it does |
 |---|---|
-| `build_pptx(slides)` | Takes a structured slide spec and generates a .pptx file. |
-| `build_pdf(sections)` | Takes structured sections and generates a PDF report. |
-| `list_templates()` | Shows available deck/report templates. |
+| `create_pptx(slides)` | Takes a structured slide spec and generates a .pptx file. 4 layout types: title, section, content, two_column. |
+| `create_pdf(sections, title?)` | Takes structured sections and generates a PDF report. 6 section types: heading, subheading, body, bullet_list, spacer, hr. |
+| `read_uploaded_file(file_path)` | Reads a user-uploaded file. Handles CSV/TSV/XLSX (returns structured table with columns + rows) and text/md/json (returns raw content). Max 50 rows for tabular data. |
+| `ask_planner(question, options)` | Pause and ask the planner to choose a direction. Shared tool from `agents/shared/`. |
 
-These are internal to Dash — the planner doesn't see them, just the output files.
+Implementation files:
+- `agents/dash/build_pptx.py` — python-pptx builder, Evergreen palette (`#1B3A2D` / `#2E7D32` / `#E8F5E9`).
+- `agents/dash/build_pdf.py` — reportlab builder.
+- Output directory: `DASH_OUTPUT_DIR` env var or `/tmp/dash_output`.
 
 ## Tech decisions
 
@@ -119,9 +124,31 @@ These are internal to Dash — the planner doesn't see them, just the output fil
 | **Agent type** | Separate chat agent, own conversation. | NOT a tool Lily calls (unlike Kofi). Has its own system prompt, own chat history. |
 | **Data access** | None. | Works from handoff text + user instructions only. No DB queries. |
 | **Where Dash lives** | `agents/dash/dash.py` | Own module under `agents/`. |
-| **Model** | Same as Lily's backend (Sonnet by default). | Document structure needs good reasoning, not just summarization — heavier than Kofi. |
-| **Web app integration** | New chat route / tab. | "Hand off to Dash" button appears after Lily's analysis. Opens a new chat seeded with the handoff. User can also navigate to Dash directly. |
-| **File delivery** | Generated files served via FastAPI endpoint. | `/api/dash/download/{file_id}` or similar. |
+| **Model** | `claude-sonnet-4-6` (override with `DASH_MODEL` env var). | Document structure needs good reasoning, not just summarization — heavier than Kofi. |
+| **Web app integration** | Agent switcher + handoff button. | "Hand off to Dash" button on Lily's latest reply. Agent switcher pill in composer bar. User can also navigate to Dash directly via sidebar or switcher. |
+| **File delivery** | `GET /api/dash/download/{filename}` | Generated files served via FastAPI `FileResponse`. |
+| **File upload** | `POST /api/upload` → `read_uploaded_file` tool. | Files stored in `/tmp/dash_uploads` with UUID prefix. Frontend has drag-and-drop + attach button (Dash only). |
+| **ask_planner** | Shared tool from `agents/shared/`. | Loop pauses, SSE event emitted, frontend renders choice cards. User's pick sent as regular text message — stateless. |
+
+## Server endpoints
+
+| Endpoint | Method | What it does |
+|---|---|---|
+| `/api/dash/chat/stream` | POST | SSE streaming chat — same contract as Lily's `/api/chat/stream` + `file_ready` and `ask_planner` event types. |
+| `/api/dash/download/{filename}` | GET | Serves generated PPTX/PDF files. |
+| `/api/dash/handoff` | POST | Converts a structured Lily handoff dict into a Dash opening message. |
+| `/api/upload` | POST | File upload (multipart). Allowed extensions: csv, tsv, xlsx, xls, json, txt, md. Returns `{filename, path}`. |
+
+## Frontend integration
+
+- **Agent switcher** — pill in the composer bar shows current agent + model. Click
+  to switch between Lily and Dash. Default = last-used agent (localStorage).
+- **Handoff button** — "Hand off to Dash" appears on Lily's latest reply. Creates
+  a new Dash chat pre-seeded with Lily's analysis and auto-sends.
+- **File attach/drop** — Dash-only paperclip button + drag-and-drop on the composer.
+  Uploads via `/api/upload`, injects `[Uploaded file: ... — path: ...]` into input.
+- **FileCard** — download links rendered in the chat when Dash generates files.
+- **AskPlannerCards** — interactive choice cards when Dash calls `ask_planner`.
 
 ## Open questions / next steps
 
@@ -129,12 +156,12 @@ These are internal to Dash — the planner doesn't see them, just the output fil
   slides)? Or let Dash build from scratch every time? A template makes output
   more consistent but adds a design dependency.
 - **Chart generation** — if the planner wants charts in the deck, Dash would need
-  matplotlib/plotly to render them as images and embed. Worth adding in v1 or v2?
-- **Direct-start flow** — when the user goes straight to Dash without Lily, what's
-  the onboarding? Dash asks what they want to build and from what information?
-- **Server routing** — Dash needs its own `/api/dash/chat` endpoint (or a mode
-  flag on the existing `/api/chat`). Also needs a file-download endpoint.
+  matplotlib/plotly to render them as images and embed. Not in v1.
+- **Live testing** — needs `ANTHROPIC_API_KEY` to test the full flow (handoff,
+  document generation, ask_planner cards, file upload processing).
 
 ## Status
 
-Design settled. Building now.
+**v1 built.** Files: `agents/dash/dash.py`, `agents/dash/build_pptx.py`,
+`agents/dash/build_pdf.py`, `agents/dash/__init__.py`, `agents/shared/__init__.py`.
+Server endpoints in `server.py`. Frontend in `web/src/App.jsx` + `index.css`.

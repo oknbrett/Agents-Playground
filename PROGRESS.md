@@ -2,6 +2,86 @@
 
 > Last updated: 2026-06-21 · Repo: `oknbrett/agents-playground`
 
+## 2026-06-21 — Multi-agent architecture: Kofi v1, Dash v1, ask_planner, agent switcher
+
+Second session. Built out the full multi-agent ecosystem around Lily.
+
+### Kofi v1 — external web-research tool
+- **`agents/kofi/kofi.py`** — Lily's `external_research` tool. Not a chat agent;
+  the planner never talks to Kofi directly. Lily calls him, he searches, returns
+  structured findings.
+- Uses **Anthropic native web search** (`web_search_20250305` server tool). Runs on
+  `claude-haiku-4-5-20251001` by default (cheap — summarization, not reasoning).
+- Per-dispatch caps: `KOFI_MAX_SEARCHES=5`, `MAX_PAUSE_CONTINUATIONS=6`.
+- Cost: Kofi's tokens + web-search fees ($10/1k requests) fold into Lily's daily
+  spend cap via `costing.py`.
+- Context isolation: Lily sends ~100-token context, gets back ~200–500 token distilled
+  findings. Her window never sees raw search results.
+- Standalone CLI: `python agents/kofi/kofi.py --query "..." --material X --signal Y`
+
+### Dash v1 — report & PPTX/PDF builder
+- **`agents/dash/dash.py`** — separate chat agent, own conversation, no DB access.
+- Model: `claude-sonnet-4-6` (heavier than Kofi — needs good document reasoning).
+- 4 tools: `create_pptx`, `create_pdf`, `read_uploaded_file`, `ask_planner`.
+- **`agents/dash/build_pptx.py`** — 4 layout types (title, section, content,
+  two-column), Evergreen palette, outputs to `/tmp/dash_output`.
+- **`agents/dash/build_pdf.py`** — 6 section types (heading, subheading, body,
+  bullet_list, spacer, hr), reportlab-based.
+- File upload: `read_uploaded_file` handles CSV/TSV (pandas), XLSX (pandas),
+  text/md/json (raw text).
+- Two entry points: handoff from Lily (pre-seeded with analysis) or direct start.
+
+### ask_planner — interactive structured choices
+- **`agents/shared/__init__.py`** — shared tool definition used by both Lily and Dash.
+- When an agent calls `ask_planner`, the loop pauses and emits an SSE event. The
+  frontend renders choice cards. The user's selection goes back as a regular text
+  message in the next request — stateless, no special protocol.
+- 2–4 options, optional `recommended` badge, optional multi-select.
+
+### Server updates (`server.py`)
+- `POST /api/upload` — file upload (Dash), stores in `/tmp/dash_uploads` with UUID prefix.
+- `POST /api/dash/handoff` — converts Lily handoff dict to opening Dash message.
+- `POST /api/dash/chat/stream` — Dash's SSE chat (same contract as Lily + `file_ready`
+  and `ask_planner` events).
+- `GET /api/dash/download/{filename}` — serves generated PPTX/PDF files.
+
+### Frontend rewrite (`web/src/App.jsx` — ~1,130 lines)
+- **Agent switcher** — pill in the composer bar (e.g. "Lily · Claude Sonnet 4.6"),
+  dropdown to switch agents. Default = last-used agent (localStorage).
+- **AskPlannerCards** — interactive choice cards rendered in the chat. Single or
+  multi-select, recommended badge, confirm button. Selection auto-sends as next
+  user message.
+- **FileCard** — download links for generated PPTX/PDF files.
+- **Hand off to Dash** button on Lily's latest reply — opens new Dash chat
+  pre-seeded with Lily's analysis, auto-sends.
+- **File attach/drop** (Dash only) — paperclip button + drag-and-drop on composer.
+  Uploads to `/api/upload`, injects path reference into input.
+- **Per-session agent tracking** — sidebar shows colored dot indicators (green=Lily,
+  blue=Dash). Sessions store which agent they belong to.
+- **Agent-specific everything** — quick actions, placeholder text, icon, greeting,
+  stream URL all swap dynamically on agent switch.
+- Full CSS for all new components in `index.css`.
+
+### Lily updates
+- 15 tools total: 13 data tools + `external_research` (Kofi) + `ask_planner`.
+- `USAGE_AWARE_TOOLS = {"external_research"}` — tools that accept `usage` kwarg.
+- Agent loop checks for `is_ask_planner_call` before processing regular tool_use
+  blocks; if found, emits ask_planner event and returns "" (pauses the loop).
+- Step labels updated: shows "Kofi is researching: {query}..." for web research.
+
+### What's left
+- **Live testing** — needs `ANTHROPIC_API_KEY` to test the full agent loops (Lily,
+  Kofi web search, Dash document generation, ask_planner flow, handoff flow).
+- **Charts in Dash** — if planners want charts in slide decks, Dash needs
+  matplotlib/plotly to render images. Not in v1.
+- **PPTX templates** — branded master slides for consistent output. v1 builds
+  from scratch with an Evergreen palette.
+- **Kofi on free backends** — Anthropic web search only works with `ANTHROPIC_API_KEY`.
+  Tavily/Brave alternative not built.
+- **Kofi caching** — repeated "NL garden seasonality" lookups could share cached results.
+- **Memory layer** — persistent team-shared memory (planned in `docs/MEMORY_DESIGN.md`,
+  not built).
+
 ## 2026-06-21 — Synthetic dataset + full-scope Lily (Billy merged)
 
 Big session. Lily went from forward-only on a thin SAP sample to **full-scope on a

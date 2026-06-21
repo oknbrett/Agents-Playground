@@ -1,68 +1,91 @@
 # Agents Playground
 
-Experiments in LLM agent reasoning. Starting point: **Lily**, a demand planning agent.
+A multi-agent demand-planning system. Three agents work together to help
+planners analyse forecasts, research market context, and build deliverables.
 
 ---
 
-## Lily — Demand Planning Reasoning Agent
+## The agents
 
-Lily reads historical sales data and helps demand planners decide whether to **RAISE**, **LOWER**, or **KEEP** a forecast — without being told about promotions, seasons, or any other business context. She reasons from numbers alone.
+| Agent | Role | Type | Model |
+|---|---|---|---|
+| **Lily** | Demand-planning analyst — reads forecast, actuals, accuracy, budget, inventory. 15 tools. The brain. | Chat agent | Claude Sonnet 4.6 (or Cerebras/Groq free) |
+| **Kofi** | External web-research — Lily dispatches him for market context (season, weather, competitors). | Tool (behind `external_research`) | Claude Haiku 4.5 |
+| **Dash** | Report & presentation builder — PPTX slide decks and PDF reports. | Chat agent | Claude Sonnet 4.6 |
 
-### Setup
+**Lily** is the main analyst. She calls **Kofi** as a tool when she needs
+external context. The planner can hand off Lily's analysis to **Dash** to turn
+it into a slide deck or report. Dash can also be used directly.
+
+Both Lily and Dash support **ask_planner** — interactive structured choices
+where the agent pauses and asks the planner to pick a direction before continuing.
+
+---
+
+## Quick start
 
 ```bash
+# 1. Install dependencies
 pip install -r requirements.txt
+
+# 2. Build the synthetic database (~1.14M rows, 200 SKUs)
+python sql/generate_synthetic.py
+
+# 3. Set your API key
 export ANTHROPIC_API_KEY=your_key_here
+
+# 4. Run the web app
+uvicorn server:app --reload --port 8000
+# second terminal:
+cd web && npm install && npm run dev
+# Open http://localhost:5173
 ```
 
-### Generate the dataset
+### Free backends (no Anthropic key needed for Lily)
 
 ```bash
-python data/generate_dataset.py
+# Cerebras (recommended free path, ~1M tokens/day)
+export CEREBRAS_API_KEY=...    # https://cloud.cerebras.ai
+# Groq (100K tokens/day)
+export GROQ_API_KEY=...        # https://console.groq.com
 ```
 
-Produces `data/demand_data.xlsx` and `data/demand_data.csv` — 1,248 rows covering 8 SKUs, 4 European customers, 13 periods × 3 years (2023–2025). The dataset has hidden patterns baked in (recurring peaks, one-time spikes, trends, forecast bias) with no label columns.
+Note: Kofi (web search) and Dash always require `ANTHROPIC_API_KEY`.
 
-### Run Lily
+### CLI
 
 ```bash
-# Analyse one SKU
-python agents/lily/lily.py --sku SKU001
-
-# Analyse all SKUs
-python agents/lily/lily.py --sku all
-
-# Narrow to one customer
-python agents/lily/lily.py --sku SKU006 --customer Carrefour
-
-# Use a custom data file
-python agents/lily/lily.py --file path/to/your_data.xlsx --sku SKU001
+python agents/lily/lily.py --sku 10000N           # Lily (paid)
+python agents/lily/lily_cerebras.py --sku 10000N   # Lily (free)
+python agents/kofi/kofi.py --query "Dutch garden-product demand outlook spring 2026"
 ```
 
-### What Lily looks for
+---
 
-| Pattern | SKU | Expected recommendation |
-|---|---|---|
-| Recurring P5 peak (×1.75, 3 years) | SKU001 | RAISE |
-| One-time P8 spike in 2023 only | SKU002 | UNCERTAIN |
-| Consistent YoY growth (+18%/yr) | SKU003 | RAISE |
-| Business plan 24–28% over actuals | SKU004 | LOWER + flag BP bias |
-| Stat model far more accurate than DP | SKU005 | LOWER |
-| Carrefour-only P11 peak (×2.10) | SKU006 | RAISE (Carrefour scope) |
-| Declining volume (−17%/yr) | SKU007 | LOWER |
-| High noise, no pattern | SKU008 | KEEP / UNCERTAIN |
+## Architecture
 
-### Data schema
+```
+┌─────────────────────────────────────────────────────┐
+│                  Planner (user)                     │
+│         ┌──────────────┐   ┌───────────────┐       │
+│         │  Lily chat   │──▶│  Dash chat    │       │
+│         │ (analysis)   │   │ (build deck)  │       │
+│         └──────┬───────┘   └───────────────┘       │
+│                │                                    │
+│         calls Kofi tool              builds PPTX/PDF│
+│         calls data tools             NO data access │
+└─────────────────────────────────────────────────────┘
+```
 
-| Column | Description |
+---
+
+## Documentation
+
+| Doc | What it covers |
 |---|---|
-| `period` | 4-weekly period, 1–13 |
-| `year` | 2023 / 2024 / 2025 |
-| `sku_id` | SKU001–SKU008 |
-| `sku_name` | Product name |
-| `customer` | Carrefour, Lidl, Tesco, Albert Heijn |
-| `region` | FR, DE, NL |
-| `actuals` | Real sales (0 for 2025 P7–P13 future) |
-| `dp_forecast` | Demand planner forecast |
-| `stat_forecast` | Statistical model forecast |
-| `business_plan` | Annual sales team target |
+| **[`CLAUDE.md`](CLAUDE.md)** | Full project handoff — data model, tools, backends, key decisions |
+| **[`PROGRESS.md`](PROGRESS.md)** | Running status log |
+| **[`docs/KOFI.md`](docs/KOFI.md)** | Kofi design doc (v1 built) |
+| **[`docs/DASH.md`](docs/DASH.md)** | Dash design doc (v1 built) |
+| **[`docs/MEMORY_DESIGN.md`](docs/MEMORY_DESIGN.md)** | Team-shared memory plan (not built) |
+| **[`sql/DATA_MODEL.md`](sql/DATA_MODEL.md)** | Column-level reference for the SAP sample tables |
