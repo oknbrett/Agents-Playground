@@ -27,6 +27,7 @@ import anthropic
 
 from agents.lily import tools as tools_module
 from agents.kofi.kofi import external_research
+from agents.shared import ASK_PLANNER_TOOL_DEF, ASK_PLANNER_TOOL_NAME, is_ask_planner_call
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -95,6 +96,15 @@ planner needs to know when something is actually wrong.
 Use your demand-planning-analysis skill for which view answers which question, \
 what isn't available yet, and the exact output format to use. Consult it \
 before answering anything that requires data.
+
+## Asking the planner
+
+When there are genuinely different directions to go — which SKUs to focus on, \
+what angle of research to pursue via Kofi, whether to drill into accuracy or \
+inventory first — use `ask_planner` to present 2-4 options as clickable cards \
+instead of a long-form question. Don't overuse it; reserve it for real forks \
+where the planner's preference shapes the analysis, not routine decisions you \
+can make yourself.
 """
 
 # ── Anthropic tool definitions ─────────────────────────────────────────────────
@@ -395,6 +405,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "required": ["query"],
         },
     },
+    ASK_PLANNER_TOOL_DEF,
 ]
 
 # ── Tool dispatch ──────────────────────────────────────────────────────────────
@@ -485,6 +496,18 @@ def run_agent_loop(
         messages.append({"role": "assistant", "content": response.content})
 
         if response.stop_reason == "tool_use":
+            for block in response.content:
+                if is_ask_planner_call(block):
+                    if on_event is not None:
+                        on_event({
+                            "type": "ask_planner",
+                            "tool_use_id": block.id,
+                            "question": block.input.get("question", ""),
+                            "options": block.input.get("options", []),
+                            "allow_multi_select": block.input.get("allow_multi_select", False),
+                        })
+                    return ""
+
             tool_results = []
             for block in response.content:
                 if getattr(block, "type", None) == "tool_use":

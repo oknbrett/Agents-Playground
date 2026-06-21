@@ -31,6 +31,7 @@ import anthropic
 
 from agents.dash.build_pptx import build_pptx
 from agents.dash.build_pdf import build_pdf
+from agents.shared import ASK_PLANNER_TOOL_DEF, ASK_PLANNER_TOOL_NAME, is_ask_planner_call
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -82,6 +83,21 @@ Recommendation, Next Steps.
 Professional but direct. You're preparing materials for a planning review — \
 be clear, concise, and confident. If the handoff is ambiguous, ask a short \
 clarifying question rather than guessing.
+
+## Uploaded files
+
+The planner can drop files (Excel, CSV, images, PDFs, etc.) into the chat. \
+When a message mentions an uploaded file, use `read_uploaded_file` to read it \
+before building. For spreadsheets you get the first rows as JSON — enough to \
+understand the structure and pull key numbers into slides/reports. For text/PDF \
+you get the raw content.
+
+## Asking the planner
+
+When there are genuinely different directions to go — structure choices, format \
+decisions, emphasis trade-offs — use `ask_planner` to present options as \
+clickable cards instead of asking a long-form question. Don't overuse it; \
+reserve it for real forks, not every minor detail.
 """
 
 # ── Tool definitions ─────────────────────────────────────────────────────────
@@ -191,13 +207,71 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "required": ["sections"],
         },
     },
+    {
+        "name": "read_uploaded_file",
+        "description": (
+            "Read a file the planner uploaded/dropped into the chat. For "
+            "spreadsheets (.xlsx, .csv) returns the first rows as JSON so you "
+            "can extract numbers. For text/markdown/JSON returns the raw content. "
+            "For PDFs returns extracted text. Call this when the planner mentions "
+            "an uploaded file and you need its content."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "The path to the uploaded file (provided in the upload event).",
+                },
+                "max_rows": {
+                    "type": "integer",
+                    "description": "For spreadsheets: max rows to return (default 50).",
+                },
+            },
+            "required": ["file_path"],
+        },
+    },
+    ASK_PLANNER_TOOL_DEF,
 ]
+
+# ── File reader ──────────────────────────────────────────────────────────────
+
+def _read_uploaded_file(file_path: str, max_rows: int = 50) -> dict:
+    """Read an uploaded file and return its content in a useful format."""
+    p = Path(file_path)
+    if not p.exists():
+        return {"error": f"File not found: {file_path}"}
+    ext = p.suffix.lower()
+    try:
+        if ext in (".csv", ".tsv"):
+            import pandas as pd
+            sep = "\t" if ext == ".tsv" else ","
+            df = pd.read_csv(p, sep=sep, nrows=max_rows)
+            return {"type": "table", "columns": list(df.columns), "rows": df.to_dict("records"), "total_rows": len(df)}
+        if ext in (".xlsx", ".xls"):
+            import pandas as pd
+            df = pd.read_excel(p, nrows=max_rows)
+            return {"type": "table", "columns": list(df.columns), "rows": df.to_dict("records"), "total_rows": len(df)}
+        if ext in (".txt", ".md", ".json"):
+            text = p.read_text(errors="replace")[:20_000]
+            return {"type": "text", "content": text, "truncated": len(p.read_text()) > 20_000}
+        if ext == ".pdf":
+            try:
+                from reportlab.lib.utils import open_for_read  # noqa: F401
+            except ImportError:
+                pass
+            return {"type": "binary", "note": f"PDF file ({p.stat().st_size} bytes). PDF text extraction not yet supported — ask the planner to paste key content."}
+        return {"type": "binary", "note": f"File type {ext} ({p.stat().st_size} bytes). Cannot read directly — ask the planner to describe the content."}
+    except Exception as exc:
+        return {"error": str(exc)}
+
 
 # ── Tool dispatch ────────────────────────────────────────────────────────────
 
 TOOL_DISPATCH: dict[str, Any] = {
     "create_pptx": lambda **kw: build_pptx(kw.pop("slides"), kw.get("filename")),
     "create_pdf": lambda **kw: build_pdf(kw.pop("sections"), kw.get("filename"), kw.get("title")),
+    "read_uploaded_file": lambda **kw: _read_uploaded_file(kw["file_path"], kw.get("max_rows", 50)),
 }
 
 
@@ -256,6 +330,23 @@ def run_dash_loop(
         messages.append({"role": "assistant", "content": response.content})
 
         if response.stop_reason == "tool_use":
+            # Check for ask_planner — if present, pause the loop and let the
+            # frontend collect the planner's choice. The next call to run_dash_loop
+            # will include the tool_result from the frontend.
+            for block in response.content:
+                if is_ask_planner_call(block):
+                    if on_event is not None:
+                        on_event({
+                            "type": "ask_planner",
+                            "tool_use_id": block.id,
+                            "question": block.input.get("question", ""),
+                            "options": block.input.get("options", []),
+                            "allow_multi_select": block.input.get("allow_multi_select", False),
+                        })
+                    # Return empty — the stream ends here; frontend will resume
+                    # with the planner's answer injected as a tool_result.
+                    return ""
+
             tool_results = []
             for block in response.content:
                 if getattr(block, "type", None) == "tool_use":

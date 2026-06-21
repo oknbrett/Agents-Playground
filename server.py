@@ -20,10 +20,11 @@ import json
 import os
 import queue
 import threading
+import uuid
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
@@ -237,6 +238,40 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
             yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(sse(), media_type="text/event-stream")
+
+
+# ── File upload (shared by Dash and future agents) ───────────────────────────
+
+UPLOAD_DIR = Path(os.environ.get("DASH_UPLOAD_DIR", "/tmp/dash_uploads"))
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+ALLOWED_EXTENSIONS = {
+    ".xlsx", ".xls", ".csv", ".tsv",
+    ".png", ".jpg", ".jpeg", ".gif", ".svg",
+    ".pdf", ".txt", ".md", ".json",
+    ".pptx", ".docx",
+}
+
+
+@app.post("/api/upload")
+async def upload_file(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Accept a file drop from the planner and store it for Dash to process."""
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        from fastapi import HTTPException
+        raise HTTPException(400, f"Unsupported file type: {ext}")
+    file_id = uuid.uuid4().hex[:12]
+    safe_name = f"{file_id}_{file.filename}"
+    dest = UPLOAD_DIR / safe_name
+    content = await file.read()
+    dest.write_bytes(content)
+    return {
+        "file_id": file_id,
+        "filename": file.filename,
+        "stored_as": safe_name,
+        "path": str(dest),
+        "size_bytes": len(content),
+    }
 
 
 # ── Dash endpoints ───────────────────────────────────────────────────────────
