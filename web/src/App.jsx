@@ -564,13 +564,14 @@ function AskPlannerCards({ data, onSelect, disabled }) {
 /* ── File download card ────────────────────────────── */
 function FileCard({ filename, display }) {
   const label = display || filename
-  const ext = label.split('.').pop()
-  const icon = ext === 'pdf' ? '📄' : ext === 'docx' ? '📝' : ext === 'xlsx' ? '📈' : '📊'
+  const ext = (label.split('.').pop() || '').toLowerCase()
   const downloadUrl = `http://localhost:8000/api/dash/download/${filename}`
   return (
     <a href={downloadUrl} download={display || filename} className="file-card" target="_blank" rel="noopener noreferrer">
-      <span className="file-card-icon">{icon}</span>
-      <span className="file-card-name">{label}</span>
+      <span className="file-card-icon" data-ext={ext}>{ext.toUpperCase()}</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <span className="file-card-name">{label}</span>
+      </div>
       <DownloadIcon />
     </a>
   )
@@ -1010,7 +1011,7 @@ export default function App() {
   )
 
   return (
-    <div className="app">
+    <div className="app" data-agent={activeAgent}>
       {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
       <aside className={`sidebar${sidebarOpen ? ' open' : ''}`}>
         <div className="brand"><AgentIcon /> {agentConfig.name}</div>
@@ -1074,16 +1075,28 @@ export default function App() {
 
         {messages.length === 0 ? (
           <div className="welcome">
-            <div className="greeting"><AgentIcon size={32} /> Good morning, {settings.displayName}</div>
+            <div className="orb" />
+            <h1 className="greeting">Good morning, {settings.displayName}</h1>
+            <p className="subline">{agentConfig.subtitle === 'Demand planning analyst'
+              ? "Let's pressure-test a forecast. What are we looking at today?"
+              : `What do you want to work on with ${agentConfig.name}?`}</p>
             {composer}
-            <div className="quick-actions">
-              {agentConfig.quickActions.map((q) => (
-                <button key={q} className="quick-action"
-                        onClick={() => setInput(q)}>{q}</button>
-              ))}
-            </div>
-            <div className="shortcut-hint">
-              <kbd>{navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}</kbd>+<kbd>K</kbd> new chat
+            <div className="suggestions">
+              <button className="suggestion" onClick={() => setInput('Analyse a SKU')}>
+                <div className="suggestion-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 21l-6-6m2-5a7 7 0 1 1-14 0 7 7 0 0 1 14 0z"/></svg></div>
+                <div className="suggestion-title">Analyse a SKU</div>
+                <div className="suggestion-desc">Pull actuals vs forecast and flag drift for any product.</div>
+              </button>
+              <button className="suggestion" onClick={() => setInput('Find demand patterns')}>
+                <div className="suggestion-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg></div>
+                <div className="suggestion-title">Find demand patterns</div>
+                <div className="suggestion-desc">Surface seasonality and trend shifts across a category.</div>
+              </button>
+              <button className="suggestion" onClick={() => setInput('Flag forecast bias')}>
+                <div className="suggestion-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l2 2"/></svg></div>
+                <div className="suggestion-title">Flag forecast bias</div>
+                <div className="suggestion-desc">Spot systematic over- or under-forecasting by planner.</div>
+              </button>
             </div>
           </div>
         ) : (
@@ -1167,7 +1180,8 @@ export default function App() {
                       <div className="role">{agentConfig.name}</div>
                     </div>
                     {narration && (
-                      <div className="body markdown-body narration">
+                      <div className="body narration">
+                        <span className="narration-spinner" />
                         <Markdown remarkPlugins={[remarkGfm]}>{narration}</Markdown>
                       </div>
                     )}
@@ -1175,7 +1189,11 @@ export default function App() {
                       <div className="steps">
                         {steps.map((s, j) => (
                           <div key={j} className="step">
-                            <span className="tick">{j === steps.length - 1 ? '◌' : '✓'}</span> {s}
+                            {j === steps.length - 1
+                              ? <span className="tick tick-running" />
+                              : <span className="tick tick-done"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M20 6 9 17l-5-5"/></svg></span>
+                            }
+                            <span style={{ color: j === steps.length - 1 ? 'var(--text)' : undefined, fontWeight: j === steps.length - 1 ? 600 : undefined }}>{s}</span>
                           </div>
                         ))}
                       </div>
