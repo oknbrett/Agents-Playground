@@ -29,24 +29,33 @@ from pathlib import Path
 import duckdb
 
 # ── Connection ──────────────────────────────────────────────────────────────
-# One read-only handle. To target real Postgres later, branch here on an env var
-# (e.g. LILY_DB_URL) and return a psycopg/SQLAlchemy connection — the SQL and the
-# tool functions below are unchanged.
+# Set LILY_DB_URL to an Azure Postgres connection string to use the real warehouse.
+# When unset, falls back to the local DuckDB file. The SQL and tool functions below
+# work unchanged on both — the views are dialect-portable.
 
 _DEFAULT_DB = Path(__file__).resolve().parents[2] / "sql" / "lily_local.duckdb"
-_con: duckdb.DuckDBPyConnection | None = None
+_con = None
 
 
-def _connect() -> duckdb.DuckDBPyConnection:
+def _connect():
     global _con
-    if _con is None:
-        db_path = os.environ.get("LILY_DB_PATH", str(_DEFAULT_DB))
-        if not Path(db_path).exists():
-            raise RuntimeError(
-                f"Local DB not found at {db_path}. Build it first: "
-                "python sql/build_local_db.py"
-            )
-        _con = duckdb.connect(db_path, read_only=True)
+    if _con is not None:
+        return _con
+
+    db_url = os.environ.get("LILY_DB_URL")
+    if db_url:
+        import psycopg2
+        _con = psycopg2.connect(db_url)
+        _con.set_session(readonly=True, autocommit=True)
+        return _con
+
+    db_path = os.environ.get("LILY_DB_PATH", str(_DEFAULT_DB))
+    if not Path(db_path).exists():
+        raise RuntimeError(
+            f"Local DB not found at {db_path}. Build it first: "
+            "python sql/generate_synthetic.py"
+        )
+    _con = duckdb.connect(db_path, read_only=True)
     return _con
 
 
@@ -54,14 +63,24 @@ def _round(v):
     return round(v, 2) if isinstance(v, float) else v
 
 
+def _execute(sql: str, params: list | None = None):
+    con = _connect()
+    if hasattr(con, 'cursor'):
+        cur = con.cursor()
+        cur.execute(sql, params or [])
+    else:
+        cur = con.execute(sql, params or [])
+    return cur
+
+
 def _query(sql: str, params: list | None = None) -> list[dict]:
-    cur = _connect().execute(sql, params or [])
+    cur = _execute(sql, params)
     cols = [d[0] for d in cur.description]
     return [{c: _round(v) for c, v in zip(cols, row)} for row in cur.fetchall()]
 
 
 def _one(sql: str, params: list | None = None):
-    return _connect().execute(sql, params or []).fetchone()[0]
+    return _execute(sql, params).fetchone()[0]
 
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
