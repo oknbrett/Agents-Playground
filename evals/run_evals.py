@@ -83,7 +83,7 @@ def parse_recommendation(text: str, sku: str) -> str | None:
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 def run_case(case: EvalCase) -> CaseResult:
-    user_message = _build_user_message(case.sku, case.customer, DEFAULT_DATA_FILE)
+    user_message = _build_user_message(case.sku, case.customer)
     usage = new_usage()
     try:
         reply = run_agent_loop(

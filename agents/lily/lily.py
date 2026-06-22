@@ -561,7 +561,7 @@ def run_lily(user_message: str) -> str:
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
-def _build_user_message(sku: str, customer: str | None, file_path: str | None = None) -> str:
+def _build_user_message(sku: str, customer: str | None) -> str:
     sku_clause = "all products in the overview" if sku.lower() == "all" else f"product {sku}"
     customer_clause = f" for customer {customer}" if customer else ""
 
@@ -591,7 +591,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    user_message = _build_user_message(args.sku, args.customer, args.file)
+    user_message = _build_user_message(args.sku, args.customer)
 
     print(f"Lily is analysing {args.sku}"
           + (f" / {args.customer}" if args.customer else "")

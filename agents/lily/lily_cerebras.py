@@ -167,7 +167,7 @@ def main() -> None:
     parser.add_argument("--file", default=DEFAULT_DATA_FILE, help="(unused; data is in the warehouse)")
     args = parser.parse_args()
 
-    user_message = _build_user_message(args.sku, args.customer, args.file)
+    user_message = _build_user_message(args.sku, args.customer)
     print(f"Lily (Cerebras / {LOOP_MODEL}) is analysing {args.sku}"
           + (f" / {args.customer}" if args.customer else "") + " ...\n")
     print(run_lily(user_message))

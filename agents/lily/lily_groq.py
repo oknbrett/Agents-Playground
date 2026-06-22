@@ -184,7 +184,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    user_message = _build_user_message(args.sku, args.customer, args.file)
+    user_message = _build_user_message(args.sku, args.customer)
 
     print(f"Lily (Groq / {LOOP_MODEL}) is analysing {args.sku}"
           + (f" / {args.customer}" if args.customer else "")
