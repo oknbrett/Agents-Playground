@@ -36,8 +36,8 @@ from agents.shared import ASK_PLANNER_TOOL_DEF, ASK_PLANNER_TOOL_NAME, is_ask_pl
 # ── Config ─────────────────────────────────────────────────────────────────────
 
 DASH_MODEL = os.environ.get("DASH_MODEL", "claude-sonnet-4-6")
-MAX_TOKENS = 4096
-MAX_TOOL_TURNS = 15
+MAX_TOKENS = 16384
+MAX_TOOL_TURNS = 20
 
 # Distillation of Lily's full analysis into a tight handoff brief runs on a cheap
 # model — it's pure extraction, not reasoning. Override with DASH_HANDOFF_MODEL.
@@ -85,11 +85,12 @@ reorder slides, add/remove content, or switch format.
 You have a code workspace and the official Anthropic document skills (docx, pdf, \
 pptx) vendored locally.
 
-**CRITICAL: Do NOT stop between steps.** When you decide to build, execute the \
-ENTIRE sequence — read_skill → write_file → run_bash — in one continuous flow of \
-tool calls. Never pause to narrate "now let me write the script" and wait for the \
-user. The planner said to build; go build. They will see your progress via the \
-tool-step trace as you work.
+**CRITICAL — you MUST call write_file in the SAME response as read_skill.** When \
+you read a skill, immediately call write_file with the build script in that same \
+turn — do NOT output text and stop. If you respond with text like "now I'll write \
+the script" without actually calling write_file, the build fails and the planner \
+sees nothing. The planner watches your progress via the tool-step trace; narrating \
+your plan adds zero value. Read, write, run — all as tool calls, no pauses.
 
 Build sequence:
 1. Call `read_skill` for the format (e.g. `read_skill("pptx", "pptxgenjs.md")`). \
@@ -102,14 +103,21 @@ Node, `build.py` for Python). Do NOT use shell heredocs.
 the run succeeded.
 
 Which skill to read:
-- .pptx → `read_skill("pptx", "pptxgenjs.md")` + `read_skill("pptx")` \
-(pptxgenjs Node library + design guidance).
+- .pptx → `read_skill("pptx", "pptxgenjs.md")` (pptxgenjs Node library) + \
+`read_skill("pptx", "evergreen-style.md")` (**mandatory** — Evergreen brand \
+colors, typography, layout rules). Follow the style guide exactly: light `F3F6F0` \
+backgrounds, `223B24` headlines, `66A332` stat numbers, editorial panels not \
+bullet lists, logo top-left.
 - .docx → `read_skill("docx")` (docx-js Node library, "Creating New Documents").
 - .pdf → `read_skill("pdf", "reference.md")` (reportlab Python).
 
 ### Environment
 - Node libraries available: `pptxgenjs`, `docx`. Python libraries: `reportlab`, \
 `pypdf`, `pdfplumber`, `python-docx`, `python-pptx`, `markdown`.
+- **Brand logo:** `./evergreen-logo.png` is in your workspace. Add it to every \
+PPTX and DOCX — typically top-right of the title slide and as a small watermark on \
+content slides. For PDFs, place it at the top of the first page. The image is a \
+horizontal logo (~940×300px) on a white/transparent background.
 - The vendored skills live at `$DASH_SKILLS_DIR` (set in your shell). Their helper \
 scripts are runnable, e.g. `python "$DASH_SKILLS_DIR/docx/scripts/office/validate.py" out.docx`.
 - LibreOffice-based steps (rendering slides to images, editing existing templates, \

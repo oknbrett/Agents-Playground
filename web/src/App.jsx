@@ -90,6 +90,64 @@ const HandoffIcon = () => (
   </svg>
 )
 
+const BotanicalBg = () => (
+  <svg className="botanical-bg" viewBox="0 0 1200 800" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <g opacity="0.7">
+      {/* top-right cluster — cascading stems with varied weight */}
+      <path d="M1200 0Q1140 60 1100 140Q1060 220 1020 280Q990 320 960 380" stroke="var(--accent)" strokeWidth="0.6" fill="none" />
+      <path d="M1120 20Q1080 50 1060 100Q1040 150 1010 190" stroke="var(--accent)" strokeWidth="1.0" fill="none" />
+      <path d="M1200 80Q1160 100 1130 160Q1110 200 1080 250" stroke="var(--accent)" strokeWidth="0.4" fill="none" />
+      {/* leaves — elongated teardrops, not symmetrical */}
+      <path d="M1095 130Q1075 105 1060 120Q1070 140 1095 130Z" fill="var(--accent)" opacity="0.18" />
+      <path d="M1050 185Q1030 165 1018 178Q1028 195 1050 185Z" fill="var(--accent)" opacity="0.14" />
+      <path d="M1015 260Q998 238 985 252Q995 272 1015 260Z" fill="var(--accent)" opacity="0.12" />
+      <path d="M1130 155Q1148 135 1140 118Q1125 130 1130 155Z" fill="var(--accent)" opacity="0.16" />
+      <path d="M970 350Q955 330 942 342Q952 360 970 350Z" fill="var(--accent)" opacity="0.10" />
+      {/* thin wispy tendrils */}
+      <path d="M1060 100Q1045 85 1035 90Q1040 100 1055 98" stroke="var(--accent)" strokeWidth="0.3" fill="none" />
+      <path d="M1010 190Q992 180 988 188Q996 196 1008 192" stroke="var(--accent)" strokeWidth="0.3" fill="none" />
+      <path d="M960 380Q948 395 942 388Q935 378 945 372" stroke="var(--accent)" strokeWidth="0.3" fill="none" />
+      {/* fern frond — alternating leaflets */}
+      <path d="M1180 40Q1155 70 1130 110" stroke="var(--accent)" strokeWidth="0.7" fill="none" />
+      <path d="M1168 58Q1155 48 1150 56" stroke="var(--accent)" strokeWidth="0.4" fill="none" />
+      <path d="M1158 72Q1145 62 1140 70" stroke="var(--accent)" strokeWidth="0.4" fill="none" />
+      <path d="M1148 88Q1135 78 1130 86" stroke="var(--accent)" strokeWidth="0.4" fill="none" />
+      <path d="M1165 62Q1175 52 1178 60" stroke="var(--accent)" strokeWidth="0.4" fill="none" />
+      <path d="M1155 78Q1165 68 1168 76" stroke="var(--accent)" strokeWidth="0.4" fill="none" />
+      <path d="M1145 94Q1155 84 1158 92" stroke="var(--accent)" strokeWidth="0.4" fill="none" />
+
+      {/* bottom-left cluster */}
+      <path d="M0 800Q60 740 100 660Q130 600 170 540Q200 490 240 440" stroke="var(--accent)" strokeWidth="0.6" fill="none" />
+      <path d="M30 780Q80 730 110 670Q140 610 180 560" stroke="var(--accent)" strokeWidth="1.0" fill="none" />
+      <path d="M0 700Q40 680 80 620Q110 570 140 520" stroke="var(--accent)" strokeWidth="0.4" fill="none" />
+      {/* leaves */}
+      <path d="M95 665Q115 690 128 675Q118 655 95 665Z" fill="var(--accent)" opacity="0.18" />
+      <path d="M165 550Q185 570 195 555Q182 538 165 550Z" fill="var(--accent)" opacity="0.14" />
+      <path d="M130 610Q148 628 158 614Q146 596 130 610Z" fill="var(--accent)" opacity="0.12" />
+      <path d="M60 720Q42 700 32 712Q42 730 60 720Z" fill="var(--accent)" opacity="0.16" />
+      <path d="M230 452Q248 468 256 454Q244 436 230 452Z" fill="var(--accent)" opacity="0.10" />
+      {/* tendrils */}
+      <path d="M100 660Q115 675 122 668Q116 658 104 662" stroke="var(--accent)" strokeWidth="0.3" fill="none" />
+      <path d="M170 540Q185 550 188 542Q180 534 172 538" stroke="var(--accent)" strokeWidth="0.3" fill="none" />
+      {/* fern frond bottom-left */}
+      <path d="M20 760Q50 730 80 690" stroke="var(--accent)" strokeWidth="0.7" fill="none" />
+      <path d="M35 748Q48 758 52 750" stroke="var(--accent)" strokeWidth="0.4" fill="none" />
+      <path d="M48 732Q60 742 64 734" stroke="var(--accent)" strokeWidth="0.4" fill="none" />
+      <path d="M60 716Q72 726 76 718" stroke="var(--accent)" strokeWidth="0.4" fill="none" />
+      <path d="M38 744Q28 754 26 746" stroke="var(--accent)" strokeWidth="0.4" fill="none" />
+      <path d="M52 728Q42 738 40 730" stroke="var(--accent)" strokeWidth="0.4" fill="none" />
+
+      {/* scattered drift — tiny marks across the midfield */}
+      <circle cx="820" cy="120" r="1.2" fill="var(--accent)" opacity="0.12" />
+      <circle cx="380" cy="680" r="1.0" fill="var(--accent)" opacity="0.10" />
+      <circle cx="900" cy="200" r="0.8" fill="var(--accent)" opacity="0.08" />
+      <circle cx="300" cy="620" r="0.8" fill="var(--accent)" opacity="0.08" />
+      <circle cx="750" cy="80" r="1.0" fill="var(--accent)" opacity="0.06" />
+      <circle cx="450" cy="720" r="1.0" fill="var(--accent)" opacity="0.06" />
+    </g>
+  </svg>
+)
+
 /* ── Agent configuration ─────────────────────────────── */
 const AGENTS = {
   lily: {
@@ -416,11 +474,70 @@ function saveSessions(sessions) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions))
 }
 
-function sessionTitle(messages) {
+function fallbackTitle(messages) {
   const first = messages.find((m) => m.role === 'user')
   if (!first) return 'New chat'
   const text = first.content.trim()
-  return text.length > 50 ? text.slice(0, 50) + '…' : text
+  return text.length > 40 ? text.slice(0, 40) + '…' : text
+}
+
+async function generateTitle(message) {
+  try {
+    const res = await fetch('http://localhost:8000/api/title', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message }),
+    })
+    if (!res.ok) return null
+    const data = await res.json()
+    return data.title || null
+  } catch { return null }
+}
+
+function sessionStatus(session, activeId, loading) {
+  if (session.id === activeId && loading) return 'working'
+  if (session.id === activeId) return 'normal'
+  const last = session.messages?.[session.messages.length - 1]
+  if (!last) return 'normal'
+  if (last.role === 'assistant' && !session.isRead) return 'unread'
+  if (last.role === 'assistant' && session.isRead && !session.userReplied) return 'awaiting'
+  return 'normal'
+}
+
+const GREETINGS = {
+  morning: [n => `Good morning, ${n}`, () => "Coffee and Lily time", () => "Rise and forecast"],
+  afternoon: [() => "Post-lunch clarity", () => "You're almost there"],
+  evening: [n => `Evening, ${n}`, () => "Still crunching?", () => "Overtime with the numbers", () => "The forecast can wait... or can it?"],
+}
+
+const SUBLINES = {
+  lily: [
+    "Which forecast needs a second look?",
+    "What numbers should we pressure-test?",
+    "Anything in the forecast feeling off?",
+    "What should we dig into today?",
+    "Where do you want to start in the numbers?",
+  ],
+  dash: [
+    "What do you need built?",
+    "Ready to turn analysis into something shareable?",
+    "What are we putting together?",
+    "What needs to go on paper?",
+  ],
+}
+
+function pickRandom(arr) {
+  return arr[Math.floor(Math.random() * arr.length)]
+}
+
+function getGreeting(name) {
+  const h = new Date().getHours()
+  const bucket = h >= 7 && h < 12 ? GREETINGS.morning : h >= 12 && h < 17 ? GREETINGS.afternoon : GREETINGS.evening
+  return pickRandom(bucket)(name)
+}
+
+function getSubline(agent) {
+  return pickRandom(SUBLINES[agent] || SUBLINES.lily)
 }
 
 function timeAgo(ts) {
@@ -439,8 +556,10 @@ function copyToClipboard(text) {
 function stepLabel({ name, input }, agent) {
   if (agent === 'dash') {
     switch (name) {
-      case 'create_pptx': return 'Building slide deck'
-      case 'create_pdf': return 'Building PDF report'
+      case 'read_skill': return `Reading the ${input?.skill || 'document'} skill guide`
+      case 'write_file': return `Writing ${input?.path || 'build script'}`
+      case 'run_bash': return `Running: ${(input?.command || '').slice(0, 50)}`
+      case 'read_file': return `Checking ${input?.path || 'output'}`
       case 'read_uploaded_file': return 'Reading uploaded file'
       case 'ask_planner': return 'Asking for your input'
       default: return 'Working'
@@ -480,6 +599,47 @@ function CopyButton({ text }) {
     <button className="copy-btn" onClick={handleCopy} aria-label="Copy to clipboard">
       {copied ? <span className="copied-text">Copied</span> : <CopyIcon />}
     </button>
+  )
+}
+
+/* ── Live play-by-play: interleaved narration text + expandable action chips ── */
+function TimelineAction({ item }) {
+  const [open, setOpen] = useState(false)
+  const running = item.status === 'running'
+  const hasDetail = (item.input && Object.keys(item.input).length > 0) || item.result != null
+  return (
+    <div className={`tl-action${running ? ' running' : ''}`}>
+      <button className="tl-action-head" onClick={() => hasDetail && setOpen(!open)}>
+        {running
+          ? <span className="lily-spinner" />
+          : <span className="tl-tick"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M20 6 9 17l-5-5" /></svg></span>}
+        <span className="tl-action-label">{item.label}</span>
+        {hasDetail && <ChevronIcon open={open} />}
+      </button>
+      {open && hasDetail && (
+        <div className="tl-detail">
+          <div className="tl-detail-tool">
+            <code>{item.name}</code>
+            {item.input && Object.keys(item.input).length > 0 &&
+              <span className="tl-detail-args">{JSON.stringify(item.input)}</span>}
+          </div>
+          {item.result != null && (
+            <pre className="tl-result">{JSON.stringify(item.result, null, 2)}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Timeline({ items }) {
+  if (!items || items.length === 0) return null
+  return (
+    <div className="tl">
+      {items.map((it, i) => it.kind === 'text'
+        ? <div key={i} className="tl-text markdown-body"><Markdown remarkPlugins={[remarkGfm]}>{it.text}</Markdown></div>
+        : <TimelineAction key={it.id || i} item={it} />)}
+    </div>
   )
 }
 
@@ -664,21 +824,31 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [steps, setSteps] = useState([])
   const [narration, setNarration] = useState('')  // live "sending Kofi…" line during a run
+  const [timeline, setTimeline] = useState([])    // live interleaved text + actions play-by-play
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settings, setSettings] = useState(loadSettings)
   const [activeAgent, setActiveAgent] = useState(
     () => localStorage.getItem(AGENT_KEY) || 'lily'
   )
+  const [welcomeExiting, setWelcomeExiting] = useState(false)
   const taRef = useRef(null)
   const endRef = useRef(null)
   const fileRef = useRef(null)
 
   const agentConfig = AGENTS[activeAgent]
+  const [greetingFn] = useState(() => {
+    const h = new Date().getHours()
+    const bucket = h >= 7 && h < 12 ? GREETINGS.morning : h >= 12 && h < 17 ? GREETINGS.afternoon : GREETINGS.evening
+    return pickRandom(bucket)
+  })
+  const greeting = greetingFn(settings.displayName)
+  const [subline, setSubline] = useState(() => getSubline(activeAgent))
 
   const switchAgent = useCallback((id) => {
     setActiveAgent(id)
     localStorage.setItem(AGENT_KEY, id)
+    setSubline(getSubline(id))
   }, [])
 
   const resolvedTheme = settings.theme === 'system'
@@ -721,16 +891,43 @@ export default function App() {
     startNewChat()
   }
 
-  const persistSession = (id, msgs, agent) => {
+  const persistSession = (id, msgs, agent, extra = {}) => {
     setSessions((prev) => {
       const existing = prev.find((s) => s.id === id)
-      const updated = existing
-        ? { ...existing, messages: msgs, title: sessionTitle(msgs), agent: agent || existing.agent }
-        : { id, messages: msgs, title: sessionTitle(msgs), agent: agent || activeAgent }
-      // Order the sidebar by most-recent activity: drop any existing copy and
-      // prepend the updated one, so the conversation you just chatted in jumps
-      // to the top — not frozen at its creation position.
+      const lastMsg = msgs[msgs.length - 1]
+      const lastSender = lastMsg?.role || 'user'
+      const isActiveChat = id === activeId || !activeId
+
+      const base = existing || { id, agent: agent || activeAgent }
+      const updated = {
+        ...base,
+        messages: msgs,
+        title: base.generatedTitle || base.title || fallbackTitle(msgs),
+        agent: agent || base.agent,
+        isRead: isActiveChat || (lastSender === 'user' ? true : (base.isRead || false)),
+        userReplied: lastSender === 'user',
+        generatedTitle: base.generatedTitle || null,
+        titleGenerating: base.titleGenerating || false,
+        ...extra,
+      }
       const next = [updated, ...prev.filter((s) => s.id !== id)]
+      saveSessions(next)
+      return next
+    })
+  }
+
+  const requestTitle = async (chatId, firstMessage) => {
+    setSessions((prev) => {
+      const next = prev.map((s) => s.id === chatId ? { ...s, titleGenerating: true } : s)
+      saveSessions(next)
+      return next
+    })
+    const title = await generateTitle(firstMessage)
+    setSessions((prev) => {
+      const next = prev.map((s) => s.id === chatId
+        ? { ...s, title: title || s.title, generatedTitle: title || s.title, titleGenerating: false }
+        : s
+      )
       saveSessions(next)
       return next
     })
@@ -751,6 +948,11 @@ export default function App() {
     if (session.agent) switchAgent(session.agent)
     setSteps([])
     setSidebarOpen(false)
+    setSessions((prev) => {
+      const next = prev.map((s) => s.id === session.id ? { ...s, isRead: true } : s)
+      saveSessions(next)
+      return next
+    })
   }
 
   const deleteSession = (e, id) => {
@@ -852,6 +1054,7 @@ export default function App() {
     setLoading(true)
     setSteps([])
     setNarration('')
+    setTimeline([])
 
     try {
       const res = await fetch(url, {
@@ -866,6 +1069,7 @@ export default function App() {
       let buffer = ''
       let liveSteps = []
       let liveNarration = ''
+      let liveTimeline = []
       let reply = null
       let usage = null
       let askPlanner = null
@@ -885,15 +1089,43 @@ export default function App() {
           if (event.type === 'tool_call') {
             liveSteps = [...liveSteps, stepLabel(event, agent)]
             setSteps(liveSteps)
+            liveTimeline = [...liveTimeline, {
+              kind: 'action',
+              id: event.tool_use_id || `${event.name}-${liveTimeline.length}`,
+              name: event.name,
+              label: stepLabel(event, agent),
+              input: event.input,
+              status: 'running',
+            }]
+            setTimeline(liveTimeline)
           } else if (event.type === 'narration') {
             liveNarration = liveNarration ? `${liveNarration}\n\n${event.text}` : event.text
             setNarration(liveNarration)
+            liveTimeline = [...liveTimeline, { kind: 'text', text: event.text }]
+            setTimeline(liveTimeline)
+          } else if (event.type === 'tool_result') {
+            let matched = false
+            liveTimeline = liveTimeline.map((it) => {
+              if (!matched && it.kind === 'action' && it.status === 'running'
+                  && (it.id === event.tool_use_id)) {
+                matched = true
+                return { ...it, status: 'done', result: event.result }
+              }
+              return it
+            })
+            setTimeline(liveTimeline)
           } else if (event.type === 'reply') {
             reply = event.text
           } else if (event.type === 'usage') {
             usage = event
           } else if (event.type === 'error') {
-            reply = `⚠️ Error: ${event.message}`
+            const msg = event.message || ''
+            const clean = msg.includes('invalid_request_error')
+              ? 'Something went wrong with the request. Try starting a new chat.'
+              : msg.includes('budget') || msg.includes('cap')
+              ? msg
+              : `Something went wrong. ${msg.length > 120 ? 'Try starting a new chat.' : msg}`
+            reply = clean
           } else if (event.type === 'ask_planner') {
             askPlanner = event
           } else if (event.type === 'file_ready') {
@@ -904,12 +1136,17 @@ export default function App() {
         }
       }
 
+      // Any action still 'running' when the stream ends is finished — mark it done.
+      liveTimeline = liveTimeline.map((it) =>
+        it.kind === 'action' && it.status === 'running' ? { ...it, status: 'done' } : it)
+
       const updated = [
         ...history,
         {
           role: 'assistant',
           content: reply || (askPlanner ? '' : '⚠️ The stream ended without a reply.'),
           steps: liveSteps,
+          timeline: liveTimeline,
           usage,
           askPlanner,
           files,
@@ -938,6 +1175,7 @@ export default function App() {
     } finally {
       setLoading(false)
       setSteps([])
+      setTimeline([])
     }
   }
 
@@ -945,15 +1183,33 @@ export default function App() {
     const text = input.trim()
     if (!text || loading) return
 
+    const isFirstMessage = messages.length === 0
     const chatId = activeId || crypto.randomUUID()
     if (!activeId) setActiveId(chatId)
 
     const history = [...messages, { role: 'user', content: text, ts: Date.now() }]
-    setMessages(history)
-    persistSession(chatId, history)
+
+    if (isFirstMessage) {
+      setWelcomeExiting(true)
+      setTimeout(() => {
+        setMessages(history)
+        persistSession(chatId, history)
+        setWelcomeExiting(false)
+      }, 500)
+    } else {
+      setMessages(history)
+      persistSession(chatId, history)
+    }
+
     setInput('')
     if (taRef.current) taRef.current.style.height = 'auto'
-    sendWithMessages(history, chatId, activeAgent)
+
+    if (isFirstMessage) {
+      requestTitle(chatId, text)
+      setTimeout(() => sendWithMessages(history, chatId, activeAgent), 500)
+    } else {
+      sendWithMessages(history, chatId, activeAgent)
+    }
   }
 
   const retry = () => {
@@ -1036,17 +1292,22 @@ export default function App() {
           <>
             <div className="section-label">Recents</div>
             <div className="chat-list">
-              {sessions.map((s) => (
-                <button
-                  key={s.id}
-                  className={`chat-list-item${s.id === activeId ? ' active' : ''}`}
-                  onClick={() => switchToSession(s)}
-                >
-                  <span className="chat-list-agent-dot" data-agent={s.agent || 'lily'} />
-                  <span className="chat-list-title">{s.title}</span>
-                  <span className="chat-list-delete" onClick={(e) => deleteSession(e, s.id)} aria-label="Delete chat">{'×'}</span>
-                </button>
-              ))}
+              {sessions.map((s) => {
+                const status = sessionStatus(s, activeId, loading)
+                return (
+                  <button
+                    key={s.id}
+                    className={`chat-list-item${s.id === activeId ? ' active' : ''}`}
+                    onClick={() => switchToSession(s)}
+                  >
+                    <span className={`chat-status-dot ${status}`} data-agent={s.agent || 'lily'} />
+                    <span className={`chat-list-title${s.titleGenerating ? ' title-shimmer' : ''}`}>
+                      {s.title || 'New chat'}
+                    </span>
+                    <span className="chat-list-delete" onClick={(e) => deleteSession(e, s.id)} aria-label="Delete chat">{'×'}</span>
+                  </button>
+                )
+              })}
             </div>
           </>
         )}
@@ -1074,28 +1335,28 @@ export default function App() {
         </div>
 
         {messages.length === 0 ? (
-          <div className="welcome">
-            <div className="orb" />
-            <h1 className="greeting">Good morning, {settings.displayName}</h1>
-            <p className="subline">{agentConfig.subtitle === 'Demand planning analyst'
-              ? "Let's pressure-test a forecast. What are we looking at today?"
-              : `What do you want to work on with ${agentConfig.name}?`}</p>
-            {composer}
+          <div className={`welcome${welcomeExiting ? ' welcome-exiting' : ''}`}>
+            <BotanicalBg />
+            <div className="welcome-content">
+              <h1 className="greeting">{greeting}</h1>
+              <p className="subline">{subline}</p>
+            </div>
             <div className="suggestions">
               <button className="suggestion" onClick={() => setInput('Analyse a SKU')}>
-                <div className="suggestion-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 21l-6-6m2-5a7 7 0 1 1-14 0 7 7 0 0 1 14 0z"/></svg></div>
                 <div className="suggestion-title">Analyse a SKU</div>
-                <div className="suggestion-desc">Pull actuals vs forecast and flag drift for any product.</div>
+                <div className="suggestion-desc">Actuals vs forecast, flag drift</div>
               </button>
               <button className="suggestion" onClick={() => setInput('Find demand patterns')}>
-                <div className="suggestion-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg></div>
                 <div className="suggestion-title">Find demand patterns</div>
-                <div className="suggestion-desc">Surface seasonality and trend shifts across a category.</div>
+                <div className="suggestion-desc">Seasonality and trend shifts</div>
               </button>
               <button className="suggestion" onClick={() => setInput('Flag forecast bias')}>
-                <div className="suggestion-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l2 2"/></svg></div>
                 <div className="suggestion-title">Flag forecast bias</div>
-                <div className="suggestion-desc">Spot systematic over- or under-forecasting by planner.</div>
+                <div className="suggestion-desc">Systematic over/under-forecasting</div>
+              </button>
+              <button className="suggestion" onClick={() => setInput('Top SKUs this period')}>
+                <div className="suggestion-title">Top SKUs this period</div>
+                <div className="suggestion-desc">Rank by revenue or volume</div>
               </button>
             </div>
           </div>
@@ -1121,7 +1382,9 @@ export default function App() {
                             <div className="role">{msgName}</div>
                             {m.ts && <div className="timestamp">{timeAgo(m.ts)}</div>}
                           </div>
-                          <CollapsibleSteps steps={m.steps} />
+                          {m.timeline && m.timeline.length > 0
+                            ? <Timeline items={m.timeline} />
+                            : <CollapsibleSteps steps={m.steps} />}
                           <KofiActivity traces={m.kofiTraces} />
                           {m.content && (
                             <div className="body markdown-body">
@@ -1179,34 +1442,18 @@ export default function App() {
                       <div className="lily-avatar"><AgentIcon size={16} /></div>
                       <div className="role">{agentConfig.name}</div>
                     </div>
-                    {narration && (
-                      <div className="body narration">
-                        <span className="narration-spinner" />
-                        <Markdown remarkPlugins={[remarkGfm]}>{narration}</Markdown>
-                      </div>
+                    <Timeline items={timeline} />
+                    {timeline.length === 0 && (
+                      <div className="thinking"><span /><span /><span /></div>
                     )}
-                    {steps.length > 0 && (
-                      <div className="steps">
-                        {steps.map((s, j) => (
-                          <div key={j} className="step">
-                            {j === steps.length - 1
-                              ? <span className="tick tick-running" />
-                              : <span className="tick tick-done"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M20 6 9 17l-5-5"/></svg></span>
-                            }
-                            <span style={{ color: j === steps.length - 1 ? 'var(--text)' : undefined, fontWeight: j === steps.length - 1 ? 600 : undefined }}>{s}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    <div className="thinking"><span /><span /><span /></div>
                   </div>
                 )}
                 <div ref={endRef} />
               </div>
             </div>
-            <div className="composer-docked">{composer}</div>
           </>
         )}
+        <div className="composer-docked">{composer}</div>
       </main>
 
       {settingsOpen && (

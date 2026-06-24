@@ -175,6 +175,38 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+class TitleRequest(BaseModel):
+    message: str
+
+
+class TitleResponse(BaseModel):
+    title: str
+
+
+@app.post("/api/title", response_model=TitleResponse)
+def generate_title(req: TitleRequest) -> TitleResponse:
+    """Generate a short chat title from the first user message using Haiku."""
+    text = req.message.strip()[:500]
+    if not text:
+        return TitleResponse(title="New chat")
+    if _BACKEND != "anthropic" or not os.environ.get("ANTHROPIC_API_KEY"):
+        words = text.split()
+        return TitleResponse(title=" ".join(words[:6]) + ("…" if len(words) > 6 else ""))
+    try:
+        import anthropic
+        client = anthropic.Anthropic()
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=30,
+            messages=[{"role": "user", "content": f"Generate a very short title (3-6 words, no quotes) for a chat that starts with this message:\n\n{text}"}],
+        )
+        title = resp.content[0].text.strip().strip('"').strip("'")
+        return TitleResponse(title=title)
+    except Exception:
+        words = text.split()
+        return TitleResponse(title=" ".join(words[:6]) + ("…" if len(words) > 6 else ""))
+
+
 @app.get("/api/usage")
 def usage_today() -> dict[str, Any]:
     with _spend_lock:

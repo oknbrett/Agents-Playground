@@ -27,8 +27,10 @@ import uuid
 from pathlib import Path
 
 DASH_DIR = Path(__file__).resolve().parent
+REPO_ROOT = DASH_DIR.parents[1]
 SKILLS_DIR = DASH_DIR / "skills"
 NODE_MODULES = DASH_DIR / "node_modules"
+ASSETS_DIR = REPO_ROOT / "assets"
 WORKSPACE_ROOT = Path(os.environ.get("DASH_WORKSPACE", str(DASH_DIR / "workspace")))
 # Finished docs are copied here so the existing /api/dash/download/<file> endpoint
 # (a flat dir keyed by filename) can serve them without per-session URL routing.
@@ -40,10 +42,19 @@ DEFAULT_TIMEOUT = int(os.environ.get("DASH_EXEC_TIMEOUT", "180"))
 
 
 def session_dir(session_id: str) -> Path:
-    """Workspace for one Dash conversation. Stable across turns so Dash can iterate."""
+    """Workspace for one Dash conversation. Stable across turns so Dash can iterate.
+    Brand assets (logo) are copied in on first creation so build scripts can reference
+    them as ./evergreen-logo.png."""
     safe = "".join(c for c in session_id if c.isalnum() or c in "-_") or "default"
     d = WORKSPACE_ROOT / safe
+    fresh = not d.exists()
     d.mkdir(parents=True, exist_ok=True)
+    if fresh and ASSETS_DIR.is_dir():
+        for asset in ASSETS_DIR.glob("*"):
+            if asset.is_file():
+                dest = d / asset.name
+                if not dest.exists():
+                    shutil.copy2(asset, dest)
     return d
 
 

@@ -41,17 +41,19 @@ DEFAULT_DATA_FILE = str(Path(__file__).parents[2] / "data" / "demand_data.xlsx")
 
 LILY_SYSTEM_PROMPT = """You are Lily, a demand planning analyst. You give demand \
 planners the full picture of a product: the forward plan — top SKUs and \
-customers, product economics, demand vs the statistical baseline and the budget, \
-inventory coverage — AND how recent forecasts have actually performed (accuracy \
-and bias). You read figures your tools have already calculated rather than \
-computing them yourself.
+customers, product economics, demand vs the budget, inventory coverage — AND how \
+recent forecasts have actually performed (accuracy and bias). You read figures \
+your tools have already calculated rather than computing them yourself.
 
 ## Fiscal calendar
 
-The fiscal year starts in NOVEMBER: P1=Nov, P4=Feb, P7=May, P12=Oct. "Now" is the \
-period just after the latest closed actuals period; that latest closed period is \
-your anchor for anything "recent". Translate periods to months when it helps the \
-planner (e.g. "P7 = May").
+The fiscal year starts in OCTOBER: P1=Oct, P2=Nov, P3=Dec, P4=Jan, P5=Feb, P6=Mar, \
+P7=Apr, P8=May, P9=Jun, P10=Jul, P11=Aug, P12=Sep. The fiscal_period_key is text \
+like 008.2026 = P8 FY2026 = May 2026, and does NOT sort alphabetically — your tools \
+already order chronologically. Translate periods to months when it helps the planner \
+(e.g. "P5 = February"). "Now" is the period just after the latest closed actuals \
+period; that latest closed period is your anchor for anything "recent" — \
+get_overview reports it.
 
 ## Hard guardrails
 
@@ -120,8 +122,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "Orient yourself: what the warehouse holds right now — the regions "
             "(sales_orgs), how many customers and materials, the loaded forecast "
             "version and its period horizon, the latest closed actuals period, and "
-            "which data streams exist (demand forecast, budget, inventory, actuals; "
-            "note statistical forecast is not available). Call this first."
+            "which data streams exist (demand forecast, budget, inventory, actuals, "
+            "forecast accuracy). Call this first."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
@@ -150,26 +152,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "future period for a SKU: demand_qty vs budget_qty, the delta and "
             "delta %, plus how many periods the plan sits above vs below target. "
             "Use this to see where the plan and the target disagree."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "material_id": _MATERIAL,
-                "sales_org": _SALES_ORG,
-                "customer_code": _CUSTOMER,
-            },
-            "required": ["material_id"],
-        },
-    },
-    {
-        "name": "demand_vs_statistical",
-        "description": (
-            "Compare the planner's demand forecast against the naive statistical "
-            "baseline per future period for a SKU: demand_qty vs statistical_qty, "
-            "the override (delta) and override %, plus a flag (PLANNER RAISED / "
-            "PLANNER LOWERED / IN LINE). The gap IS the planner's manual judgment — "
-            "use it to see where and how much a human moved off the model, and to "
-            "question overrides that aren't backed by a trend."
         ),
         "input_schema": {
             "type": "object",
@@ -241,15 +223,15 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "name": "family_scan",
         "description": (
             "Cross-FAMILY rollup in one call: every product family (L1/L2) with its "
-            "trailing-12m revenue, demand-vs-statistical override %, average YoY "
+            "trailing-12m revenue, average demand-vs-budget gap %, average YoY "
             "growth, and SKU count. Use this FIRST for 'biggest family' / 'which "
             "category' questions, then drill into a family with divergence_scan. "
-            "Ordered by revenue by default ('override' or 'growth' also)."
+            "Ordered by revenue by default ('budget' or 'growth' also)."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "order_by": {"type": "string", "enum": ["revenue", "override", "growth"],
+                "order_by": {"type": "string", "enum": ["revenue", "budget", "growth"],
                              "description": "Order families by (default 'revenue')."},
             },
             "required": [],
@@ -258,20 +240,18 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "divergence_scan",
         "description": (
-            "Cross-SKU scan in ONE call — every SKU's demand-vs-statistical override "
-            "(whole horizon AND latest forecast year for escalation), demand-vs-budget "
-            "gap, trailing-12m revenue, YoY actual growth, and family. Use this "
-            "INSTEAD of looping demand_vs_statistical SKU-by-SKU — it lets you reason "
-            "over the complete set, not a sample. Optionally filter to one family "
-            "(L2 category). order_by: 'revenue' (default), 'override', "
-            "'override_latest_year', 'budget', 'growth'."
+            "Cross-SKU scan in ONE call — every SKU's demand-vs-budget gap, "
+            "trailing-12m revenue, YoY actual growth, and family. Use this INSTEAD of "
+            "looping the per-SKU tools — it lets you reason over the complete set, "
+            "not a sample. Optionally filter to one family (L2 category). "
+            "order_by: 'revenue' (default), 'budget', 'growth'."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "category": {"type": "string", "description": "Optional L2 category to filter to (a product family)."},
                 "order_by": {"type": "string",
-                             "enum": ["revenue", "override", "override_latest_year", "budget", "growth"],
+                             "enum": ["revenue", "budget", "growth"],
                              "description": "How to order (default 'revenue')."},
                 "n": {"type": "integer", "description": "How many SKUs to return (default 50)."},
             },
@@ -329,10 +309,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "The full actuals sales history for a SKU — real sold quantity per "
             "period across all closed periods (multiple years), with per-year "
             "totals and year-over-year growth. Use this to judge whether a forward "
-            "forecast or planner override is backed by what actually happened "
-            "(e.g. a +20% plan against two years of flat actuals). Aggregates "
-            "across customers unless customer_code is given. This is raw sales "
-            "history — NOT forecast accuracy or bias (that's Billy's domain)."
+            "plan is backed by what actually happened (e.g. a +20% plan against two "
+            "years of flat actuals). Aggregates across customers unless customer_code "
+            "is given. This is raw sales history — NOT forecast accuracy or bias."
         ),
         "input_schema": {
             "type": "object",
@@ -369,8 +348,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "activity, category/market trends, pricing moves, regulatory or supply-"
             "chain news. Kofi runs his own web search and returns distilled findings "
             "with cited source URLs, plus any points that CONFLICT with the internal "
-            "read you describe. Use this when an internal signal (a planner override, "
-            "a YoY swing, a budget gap, a flat forecast) might be driven by something "
+            "read you describe. Use this when an internal signal (a YoY swing, a "
+            "budget gap, a forecast revision, a flat forecast) might be driven by something "
             "outside the numbers, or when the planner asks what's happening in the "
             "market. You may call it more than once for different angles. It returns "
             "external evidence only — YOU still own the RAISE / LOWER / KEEP call and "
@@ -398,7 +377,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "material_id": _MATERIAL,
                         "product_family": {"type": "string", "description": "Product family / category, e.g. 'Potting Soil — Indoor'."},
                         "current_recommendation": {"type": "string", "description": "Your current lean: RAISE / LOWER / KEEP / UNCERTAIN."},
-                        "key_signal": {"type": "string", "description": "The internal signal prompting the question, e.g. 'YoY +18%, planner override +12% above statistical'."},
+                        "key_signal": {"type": "string", "description": "The internal signal prompting the question, e.g. 'YoY +18%, demand 12% above budget'."},
                     },
                 },
             },
@@ -414,7 +393,6 @@ TOOL_DISPATCH: dict[str, Any] = {
     "get_overview": tools_module.get_overview,
     "get_forecast": tools_module.get_forecast,
     "demand_vs_budget": tools_module.demand_vs_budget,
-    "demand_vs_statistical": tools_module.demand_vs_statistical,
     "family_scan": tools_module.family_scan,
     "divergence_scan": tools_module.divergence_scan,
     "inventory_coverage": tools_module.inventory_coverage,
@@ -523,6 +501,7 @@ def run_agent_loop(
                     if on_event is not None:
                         on_event({
                             "type": "tool_call",
+                            "tool_use_id": block.id,
                             "name": block.name,
                             "input": block.input,
                         })
@@ -534,10 +513,23 @@ def run_agent_loop(
                         trace = result.pop("_trace")
                         if on_event is not None:
                             on_event({"type": "kofi_activity", "trace": trace})
+                    # Surface what the tool returned so the UI's action chip can be
+                    # expanded to "see what she found" (capped so payloads stay light).
+                    if on_event is not None:
+                        preview = json.dumps(result, default=str)
+                        on_event({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "name": block.name,
+                            "result": result if len(preview) <= 6000
+                                      else {"_truncated": preview[:6000] + " …"},
+                        })
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
-                        "content": json.dumps(result),
+                        # default=str is a safety net: tools already coerce Decimal
+                        # to float, but this guarantees no DB type can crash the loop.
+                        "content": json.dumps(result, default=str),
                     })
             messages.append({"role": "user", "content": tool_results})
             continue

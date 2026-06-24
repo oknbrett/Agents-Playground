@@ -52,7 +52,6 @@ AGENT_TOOLS = [
     tools_module.get_overview,
     tools_module.get_forecast,
     tools_module.demand_vs_budget,
-    tools_module.demand_vs_statistical,
     tools_module.inventory_coverage,
     tools_module.product_economics,
     tools_module.top_skus,
