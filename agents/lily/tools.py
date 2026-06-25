@@ -24,10 +24,18 @@ and does NOT sort chronologically — the views order via fiscal_year + fiscal_p
 from __future__ import annotations
 
 import os
+import threading
 from decimal import Decimal
 from pathlib import Path
 
 import duckdb
+
+# A single shared connection is reused across requests, but FastAPI runs sync
+# endpoints in a thread pool — concurrent use of one psycopg2 connection corrupts
+# the libpq protocol and can hard-crash the process (segfault, no traceback). This
+# lock serializes every query so the shared connection is only ever touched by one
+# thread at a time.
+_db_lock = threading.RLock()
 
 # ── Connection ──────────────────────────────────────────────────────────────
 # Three ways to reach the data, checked in order:
@@ -123,13 +131,15 @@ def _execute(sql: str, params: list | None = None):
 
 
 def _query(sql: str, params: list | None = None) -> list[dict]:
-    cur = _execute(sql, params)
-    cols = [d[0] for d in cur.description]
-    return [{c: _round(v) for c, v in zip(cols, row)} for row in cur.fetchall()]
+    with _db_lock:
+        cur = _execute(sql, params)
+        cols = [d[0] for d in cur.description]
+        return [{c: _round(v) for c, v in zip(cols, row)} for row in cur.fetchall()]
 
 
 def _one(sql: str, params: list | None = None):
-    return _round(_execute(sql, params).fetchone()[0])
+    with _db_lock:
+        return _round(_execute(sql, params).fetchone()[0])
 
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
@@ -370,19 +380,35 @@ _FAMILY_ORDER = {
 }
 
 
-def family_scan(order_by: str = "revenue") -> dict:
+def family_scan(sales_org: str | int | None = None, order_by: str = "revenue") -> dict:
     """Cross-family rollup in ONE call: every product family (L1/L2 hierarchy)
     with its trailing-12m revenue, weighted demand-vs-budget gap %, weighted YTD YoY
     growth, and SKU count. Use this FIRST for 'biggest family' / 'which category'
-    questions, then drill with divergence_scan(category=...). Ordered by revenue
-    by default ('budget' or 'growth' also available)."""
+    questions, then drill with divergence_scan(category=...).
+
+    **Pass sales_org to scope to ONE region — almost always what you want.** A
+    planner owns a single region; when a region is named (e.g. UK), pass its
+    sales_org here so the rollup is that region only. Omit sales_org ONLY for an
+    explicit global/all-regions view. Ordered by revenue ('budget' or 'growth' also)."""
     order = _FAMILY_ORDER.get(order_by, _FAMILY_ORDER["revenue"])
+    where, params = [], []
+    if sales_org is not None:
+        where.append("sales_org = ?"); params.append(str(sales_org))
+    wc = ("WHERE " + " AND ".join(where)) if where else ""
+    # Weighted family rollup straight from vw_sku_divergence (which carries sales_org),
+    # so the same weighting works region-scoped or global.
     rows = _query(
-        f"SELECT l1_division, l2_category, n_skus, family_trailing_revenue_eur, "
-        f"avg_demand_vs_budget_pct, avg_yoy_growth_pct, "
-        f"skus_with_budget_comparison, skus_with_yoy_comparison "
-        f"FROM lily.vw_family_divergence ORDER BY {order}")
+        f"SELECT l1_division, l2_category, COUNT(*) AS n_skus, "
+        f"ROUND(SUM(trailing_12m_revenue_eur), 2) AS family_trailing_revenue_eur, "
+        f"SUM(demand_qty) AS demand_qty, "
+        f"ROUND((SUM(budget_scope_demand_qty) - SUM(budget_qty)) / NULLIF(SUM(budget_qty), 0) * 100, 1) AS avg_demand_vs_budget_pct, "
+        f"ROUND((SUM(yoy_current_ytd_qty) - SUM(yoy_prior_ytd_qty)) / NULLIF(SUM(yoy_prior_ytd_qty), 0) * 100, 1) AS avg_yoy_growth_pct, "
+        f"COUNT(*) FILTER (WHERE budget_qty > 0) AS skus_with_budget_comparison, "
+        f"COUNT(*) FILTER (WHERE yoy_prior_ytd_qty > 0) AS skus_with_yoy_comparison "
+        f"FROM lily.vw_sku_divergence {wc} "
+        f"GROUP BY l1_division, l2_category ORDER BY {order}", params)
     return {
+        "scope": f"sales_org {sales_org}" if sales_org is not None else "ALL REGIONS (global)",
         "ordered_by": order_by,
         "metric_note": "Family percentages are weighted from summed quantities, not averages of SKU percentages. "
                        "YoY is current fiscal-year YTD vs the same prior-year periods.",
@@ -399,14 +425,20 @@ _DIVERGENCE_ORDER = {
 
 
 def divergence_scan(category: str | None = None, order_by: str = "revenue",
-                    n: int = 50) -> dict:
+                    n: int = 50, sales_org: str | int | None = None) -> dict:
     """Cross-SKU scan in ONE call — every SKU's demand-vs-budget gap, trailing-12m
     revenue, YoY actual growth, and family. Use this instead of looping the per-SKU
     tools: it lets you reason over the COMPLETE set, not a sample. Optionally filter
-    to one family (L2 category). Ordered by revenue by default; order_by='budget'
+    to one family (L2 category).
+
+    **Pass sales_org to scope to ONE region — almost always what you want.** When a
+    region is named, every SKU here should be from that region; omit sales_org only
+    for an explicit all-regions view. Ordered by revenue by default; order_by='budget'
     surfaces the biggest plan-vs-target gaps, 'growth' the history."""
     order = _DIVERGENCE_ORDER.get(order_by, _DIVERGENCE_ORDER["revenue"])
     where, params = [], []
+    if sales_org is not None:
+        where.append("sales_org = ?"); params.append(str(sales_org))
     if category is not None:
         where.append("l2_category = ?"); params.append(category)
     wc = ("WHERE " + " AND ".join(where)) if where else ""
@@ -419,6 +451,7 @@ def divergence_scan(category: str | None = None, order_by: str = "revenue",
         f"yoy_prior_ytd_qty, yoy_compared_periods, yoy_basis "
         f"FROM lily.vw_sku_divergence {wc} ORDER BY {order} LIMIT ?", params + [n])
     return {
+        "scope": f"sales_org {sales_org}" if sales_org is not None else "ALL REGIONS (global)",
         "category": category or "all families",
         "ordered_by": order_by,
         "returned": len(rows),
@@ -429,6 +462,74 @@ def divergence_scan(category: str | None = None, order_by: str = "revenue",
                  "Filter by category or raise n for the full set — only the LIMIT "
                  "trims, nothing is sampled."),
         "records": rows,
+    }
+
+
+_HIER_COLS = ("level, node_code, node_name, n_skus, demand_qty, trailing_revenue_eur, "
+              "demand_vs_budget_pct, yoy_growth_pct, wmape_pct, bias_pct, accuracy_pct, "
+              "stockout_skus, budget_gap_qty, abs_error_qty, node_path, parent_path")
+
+
+def hierarchy_view(sales_org: str | int, node: str | None = None, level: int = 2) -> dict:
+    """Pre-aggregated product-hierarchy rollup for ONE region. Reads finished
+    numbers — never loops SKUs. Region (sales_org) is required; the hierarchy is
+    always region-scoped.
+
+    - Name a node (e.g. node='HOME PEST CONTROLS') → returns that node's TOTAL plus
+      every immediate child (the next level down) with the same metrics. That single
+      call IS the category overview: the parent total and how its sub-divisions sit.
+    - Omit node → returns all nodes at `level` (default 2, the planner's usual lens).
+    - To drill, call again with a child's node_code (or node_name) as `node`.
+
+    Each node carries: n_skus, demand_qty, trailing_revenue_eur, demand_vs_budget_pct,
+    yoy_growth_pct, wmape_pct, bias_pct, accuracy_pct, stockout_skus. Reason over the
+    whole picture — clashes between children, a whole-node problem, a single culprit,
+    or nothing worth drilling are all valid reads. Do NOT assume the next step is to
+    drill the biggest one."""
+    if sales_org is None:
+        return {"error": "sales_org (region) is required — the hierarchy is always region-scoped."}
+    so = str(sales_org)
+    if node is None:
+        rows = _query(
+            f"SELECT {_HIER_COLS} FROM lily.vw_hierarchy_rollup "
+            f"WHERE sales_org = ? AND level = ? "
+            f"ORDER BY trailing_revenue_eur DESC NULLS LAST", [so, level])
+        return {
+            "scope": f"region {so}", "view": f"all level-{level} nodes",
+            "note": "Pre-aggregated per node — finished numbers, no SKU scan. Drill any "
+                    "node by passing its node_code/node_name back as `node`.",
+            "nodes": rows,
+        }
+    nd = _query(
+        f"SELECT {_HIER_COLS} FROM lily.vw_hierarchy_rollup "
+        f"WHERE sales_org = ? AND (LOWER(node_name) = LOWER(?) OR node_code = ?) "
+        f"ORDER BY level LIMIT 1", [so, str(node), str(node)])
+    if not nd:
+        return {"error": f"No hierarchy node '{node}' found in region {so}.",
+                "hint": "Call hierarchy_view(sales_org) with no node to list the level-2 nodes."}
+    parent = nd[0]
+    children = _query(
+        f"SELECT {_HIER_COLS} FROM lily.vw_hierarchy_rollup "
+        f"WHERE sales_org = ? AND parent_path = ? "
+        f"ORDER BY trailing_revenue_eur DESC NULLS LAST", [so, parent["node_path"]])
+    # Attribution: each child's share of the PARENT's miss — "% of the budget gap /
+    # forecast error this child drives", not its share of revenue.
+    pg, pe = parent.get("budget_gap_qty"), parent.get("abs_error_qty")
+    for ch in children:
+        if pg not in (None, 0) and ch.get("budget_gap_qty") is not None:
+            ch["share_of_budget_miss_pct"] = round(ch["budget_gap_qty"] / pg * 100, 1)
+        if pe not in (None, 0) and ch.get("abs_error_qty") is not None:
+            ch["share_of_forecast_error_pct"] = round(ch["abs_error_qty"] / pe * 100, 1)
+    return {
+        "scope": f"region {so}",
+        "note": "Pre-aggregated: the node TOTAL plus every immediate child, in one read "
+                "(no SKU loop). Metrics are quantity-weighted; +bias = over-forecast. "
+                "share_of_budget_miss_pct / share_of_forecast_error_pct = how much of the "
+                "PARENT's gap/error each child drives (the attribution — NOT revenue share; "
+                "a child can exceed 100% if others offset it). Reason over the whole set — "
+                "don't default to drilling the biggest child.",
+        "node": parent,
+        "children": children,
     }
 
 

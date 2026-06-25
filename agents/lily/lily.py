@@ -112,7 +112,9 @@ can make yourself.
 # ── Anthropic tool definitions ─────────────────────────────────────────────────
 
 _MATERIAL = {"type": "string", "description": "The SKU / material id, e.g. 'UNI40' or '10491'."}
-_SALES_ORG = {"type": "integer", "description": "Optional. Region / business-unit code, e.g. 2510."}
+_SALES_ORG = {"type": "integer", "description": "Region / business-unit code. Pass this to scope to ONE region. "
+              "Map: 1010=Germany, 1110=UK, 1210=France, 1810=Poland, 1910=Austria, 2510=Benelux, "
+              "3010=Australia, 3710=Pokon."}
 _CUSTOMER = {"type": "string", "description": "Optional. Customer code (Triad Region), e.g. 'FA'."}
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
@@ -123,7 +125,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "(sales_orgs), how many customers and materials, the loaded forecast "
             "version and its period horizon, the latest closed actuals period, and "
             "which data streams exist (demand forecast, budget, inventory, actuals, "
-            "forecast accuracy). Call this first."
+            "forecast accuracy). You are normally already oriented from your system "
+            "context — only call this if you need an exact current count, NOT as a "
+            "routine first step."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
@@ -223,14 +227,17 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "name": "family_scan",
         "description": (
             "Cross-FAMILY rollup in one call: every product family (L1/L2) with its "
-            "trailing-12m revenue, average demand-vs-budget gap %, average YoY "
+            "trailing-12m revenue, weighted demand-vs-budget gap %, weighted YoY "
             "growth, and SKU count. Use this FIRST for 'biggest family' / 'which "
             "category' questions, then drill into a family with divergence_scan. "
-            "Ordered by revenue by default ('budget' or 'growth' also)."
+            "ALWAYS pass sales_org when a region is named — a planner owns one region, "
+            "so 'how is HomePest in the UK' must be scoped to UK (1110). Omit sales_org "
+            "ONLY for an explicit all-regions view. Ordered by revenue ('budget'/'growth' also)."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
+                "sales_org": _SALES_ORG,
                 "order_by": {"type": "string", "enum": ["revenue", "budget", "growth"],
                              "description": "Order families by (default 'revenue')."},
             },
@@ -243,12 +250,15 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "Cross-SKU scan in ONE call — every SKU's demand-vs-budget gap, "
             "trailing-12m revenue, YoY actual growth, and family. Use this INSTEAD of "
             "looping the per-SKU tools — it lets you reason over the complete set, "
-            "not a sample. Optionally filter to one family (L2 category). "
-            "order_by: 'revenue' (default), 'budget', 'growth'."
+            "not a sample. Optionally filter to one family (L2 category). ALWAYS pass "
+            "sales_org when a region is named — scope to that region, never return "
+            "global numbers when a region was asked. order_by: 'revenue' (default), "
+            "'budget', 'growth'."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
+                "sales_org": _SALES_ORG,
                 "category": {"type": "string", "description": "Optional L2 category to filter to (a product family)."},
                 "order_by": {"type": "string",
                              "enum": ["revenue", "budget", "growth"],
@@ -256,6 +266,29 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "n": {"type": "integer", "description": "How many SKUs to return (default 50)."},
             },
             "required": [],
+        },
+    },
+    {
+        "name": "hierarchy_view",
+        "description": (
+            "PRE-AGGREGATED product-hierarchy rollup for ONE region — use this for any "
+            "category / product-family question instead of looping SKUs. Name a node "
+            "(e.g. node='HOME PEST CONTROLS') and it returns that node's TOTAL plus every "
+            "immediate sub-division (next level down) with revenue, demand-vs-budget %, "
+            "YoY %, accuracy/bias and stockout count — all finished numbers, one read. "
+            "Omit node to list all level-2 categories. Drill by passing a child's "
+            "node_code/node_name back as node. sales_org (region) is REQUIRED — the "
+            "hierarchy is always region-scoped. Reason over the whole picture yourself; "
+            "do not assume the next step is to drill the biggest child."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sales_org": _SALES_ORG,
+                "node": {"type": "string", "description": "A hierarchy node by name or code (e.g. 'HOME PEST CONTROLS', 'FLYING INSECTS'). Omit to list level-2 nodes."},
+                "level": {"type": "integer", "description": "When no node is given, which level to list (1-4; default 2 = the planner's usual lens)."},
+            },
+            "required": ["sales_org"],
         },
     },
     {
@@ -395,6 +428,7 @@ TOOL_DISPATCH: dict[str, Any] = {
     "demand_vs_budget": tools_module.demand_vs_budget,
     "family_scan": tools_module.family_scan,
     "divergence_scan": tools_module.divergence_scan,
+    "hierarchy_view": tools_module.hierarchy_view,
     "inventory_coverage": tools_module.inventory_coverage,
     "product_economics": tools_module.product_economics,
     "top_skus": tools_module.top_skus,
@@ -559,8 +593,8 @@ def _build_user_message(sku: str, customer: str | None) -> str:
 
     return (
         f"Please evaluate the demand forecast{customer_clause} for {sku_clause}.\n\n"
-        "Start with get_overview to see what data exists, then analyse using the "
-        "available tools before producing your structured recommendation."
+        "Go straight to the SKU/period tools and analyse, then produce your "
+        "structured recommendation. (You're already oriented — no need to explore first.)"
     )
 
 

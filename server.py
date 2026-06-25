@@ -139,10 +139,11 @@ needs analysis:
   the data (a SKU forecast evaluation, a demand-vs-budget check, inventory
   coverage, product economics, or a top-SKUs ranking). Then dig as deep as
   you need to.
-- Call get_overview at most ONCE per conversation. Once you've seen the
-  overview (regions, customers, materials, streams), you already have it —
-  do not call it again; answer directly from what it returned. For example,
-  to list the customers, read customer_codes from the overview you already have.
+- You are ALREADY oriented: the data landscape (regions, the "now" period,
+  fiscal calendar, which streams exist, the forecast horizon) is in your system
+  context below. Do NOT call get_overview to explore — go straight to the
+  SKU/period tools for the question. Only call get_overview if you genuinely
+  need an exact current count, and never as a routine first step.
 - For quick factual lookups, one or two tool calls may be enough — you don't
   need the full structured recommendation block unless the user asks for a
   forecast evaluation or recommendation.
@@ -158,16 +159,81 @@ needs analysis:
 """
 
 
+_LANDSCAPE_CACHE: str | None = None
+
+
+def _data_landscape() -> str:
+    """A compact, cached snapshot of what's in the warehouse, injected into the
+    system prompt so Lily starts ALREADY oriented and doesn't burn her first step
+    re-discovering the data with get_overview on every question. Computed once per
+    process — the metadata (regions, the 'now' period, fiscal calendar, which
+    streams exist) is effectively static."""
+    global _LANDSCAPE_CACHE
+    if _LANDSCAPE_CACHE is not None:
+        return _LANDSCAPE_CACHE
+    try:
+        from agents.lily import tools as _t
+        ov = _t.get_overview()
+        streams = ", ".join(k for k, v in ov["streams_available"].items() if v)
+        _LANDSCAPE_CACHE = (
+            "\n\n## The data you already have (you are oriented — do NOT call get_overview to explore)\n"
+            "- Regions (sales_org code = region). Use these EXACT mappings, never guess:\n"
+            "    1010 = Germany | 1110 = UK | 1210 = France | 1810 = Poland |\n"
+            "    1910 = Austria | 2510 = Benelux | 3010 = Australia | 3710 = Pokon\n"
+            "- **WORK IN ONE REGION BY DEFAULT.** A demand planner owns a single region, so when a\n"
+            "  region is named (e.g. \"how is HomePest in the UK?\"), pass that sales_org to EVERY\n"
+            "  tool — family_scan, divergence_scan, and the per-SKU tools all take sales_org. Never\n"
+            "  return global/cross-region numbers when a region was asked. Go cross-region only if\n"
+            "  the user explicitly asks to compare regions.\n"
+            "- **Product hierarchy = L1 division > L2 category > L3 > L4 > SKU.** For any category /\n"
+            "  product-family question use hierarchy_view (pre-aggregated) — NEVER loop SKUs. Default\n"
+            "  lens is **level 2**, and SAY which level you're showing (e.g. \"showing the level-2\n"
+            "  sub-categories\"). When they ask specifically about sub-categories, drill one more to\n"
+            "  **level 3**. Always state the level; honour any explicit level the user names.\n"
+            "- Budget is loaded for Pokon (3710) and Benelux (2510) only; the other 6 regions have\n"
+            "  no budget — say so plainly rather than implying a global gap.\n"
+            f"- \"Now\" = the period after the latest closed actuals; latest closed is "
+            f"{ov['latest_closed_actuals_period']}.\n"
+            f"- Forward forecast horizon: {ov['forecast_horizon'][0]} to {ov['forecast_horizon'][1]} "
+            f"(latest weekly vintage {ov['forecast_version_key']}).\n"
+            f"- ~{ov['material_count']} materials (SKUs), ~{ov['customer_count']} customer groups.\n"
+            f"- Streams available: {streams}.\n"
+            f"- {ov['fiscal_calendar']}\n"
+            "Go straight to the SKU/period tools for the question asked."
+        )
+    except Exception as exc:  # DB unreachable at prompt-build time — degrade gracefully
+        _LANDSCAPE_CACHE = (
+            "\n\n## Data landscape\nThe warehouse views are available; call get_overview once if "
+            f"you need to orient. (live overview unavailable: {exc})"
+        )
+    return _LANDSCAPE_CACHE
+
+
 def _system_blocks() -> list[dict[str, Any]]:
-    """Base prompt plus chat-mode guidance. Data now lives in the warehouse, so
-    Lily orients herself with get_overview — no file path needed."""
+    """Base prompt + chat-mode guidance + a cached data-landscape snapshot, so Lily
+    is oriented from the first token and skips the routine get_overview step."""
     return [
         {
             "type": "text",
-            "text": LILY_SYSTEM_PROMPT + CHAT_MODE_GUIDANCE,
+            "text": LILY_SYSTEM_PROMPT + CHAT_MODE_GUIDANCE + _data_landscape(),
             "cache_control": {"type": "ephemeral"},
         }
     ]
+
+
+@app.on_event("startup")
+def _prewarm_landscape() -> None:
+    """Build the data-landscape snapshot in the BACKGROUND at startup so the first
+    question is fast — without blocking the server from accepting connections."""
+    if _BACKEND == "anthropic":
+        threading.Thread(target=lambda: _safe_prewarm(), daemon=True).start()
+
+
+def _safe_prewarm() -> None:
+    try:
+        _data_landscape()
+    except Exception:
+        pass
 
 
 @app.get("/api/health")

@@ -717,3 +717,87 @@ SELECT
     COUNT(*) FILTER (WHERE yoy_prior_ytd_qty > 0)         AS skus_with_yoy_comparison
 FROM lily.vw_sku_divergence
 GROUP BY l1_division, l2_category;
+
+
+-- ============================================================================
+-- HIERARCHY ROLLUP — pre-aggregated metrics at EVERY product-hierarchy level
+-- (L1..L4) per region, so Lily reads a category's finished numbers AND its
+-- children's in ONE read instead of looping SKUs. Each node carries node_path +
+-- parent_path, so a node's children = rows WHERE parent_path = <node_path>.
+-- Percentages are quantity-weighted; accuracy is reconstructed from the per-SKU
+-- lag-2 figures (abs_error = wmape% x actual, error = bias% x actual).
+-- ============================================================================
+CREATE OR REPLACE VIEW lily.vw_hierarchy_rollup AS
+WITH sku_base AS (
+    SELECT d.sales_org, d.material_id,
+           ph.level_1_code AS l1c, NULLIF(ph.level_1_description, 'Not assigned') AS l1n,
+           ph.level_2_code AS l2c, NULLIF(ph.level_2_description, 'Not assigned') AS l2n,
+           ph.level_3_code AS l3c, NULLIF(ph.level_3_description, 'Not assigned') AS l3n,
+           ph.level_4_code AS l4c, NULLIF(ph.level_4_description, 'Not assigned') AS l4n,
+           d.demand_qty,
+           d.trailing_12m_revenue_eur                        AS rev,
+           d.budget_scope_demand_qty, d.budget_qty,
+           d.yoy_current_ytd_qty AS yoy_cur, d.yoy_prior_ytd_qty AS yoy_pri,
+           a.total_actual_qty                                AS acc_actual,
+           a.wmape_pct / 100.0 * a.total_actual_qty          AS acc_abserr,
+           a.bias_pct  / 100.0 * a.total_actual_qty          AS acc_err,
+           CASE WHEN i.coverage_flag = 'STOCKOUT RISK' THEN 1 ELSE 0 END AS stockout
+    FROM lily.vw_sku_divergence d
+    LEFT JOIN warehouse.dim_material dm           ON dm.material_key = d.material_id
+    LEFT JOIN warehouse.dim_product_hierarchy ph  ON ph.product_hierarchy_key = dm.product_hierarchy_key
+    LEFT JOIN lily.vw_forecast_accuracy a         ON a.sales_org = d.sales_org AND a.material_id = d.material_id
+    LEFT JOIN lily.vw_inventory_coverage i        ON i.sales_org = d.sales_org AND i.material_id = d.material_id
+)
+SELECT sales_org, 1 AS level, l1c AS node_code, COALESCE(l1n, l1c) AS node_name,
+       CAST(NULL AS text) AS parent_path, l1c AS node_path,
+       COUNT(DISTINCT material_id) AS n_skus, SUM(demand_qty) AS demand_qty,
+       ROUND(SUM(rev), 2) AS trailing_revenue_eur,
+       ROUND((SUM(budget_scope_demand_qty) - SUM(budget_qty)) / NULLIF(SUM(budget_qty), 0) * 100, 1) AS demand_vs_budget_pct,
+       ROUND((SUM(yoy_cur) - SUM(yoy_pri)) / NULLIF(SUM(yoy_pri), 0) * 100, 1) AS yoy_growth_pct,
+       ROUND(SUM(acc_abserr) / NULLIF(SUM(acc_actual), 0) * 100, 1) AS wmape_pct,
+       ROUND(SUM(acc_err)    / NULLIF(SUM(acc_actual), 0) * 100, 1) AS bias_pct,
+       ROUND((1 - LEAST(SUM(acc_abserr) / NULLIF(SUM(acc_actual), 0), 1)) * 100, 1) AS accuracy_pct,
+       SUM(stockout) AS stockout_skus,
+       ROUND(SUM(budget_scope_demand_qty) - SUM(budget_qty), 0) AS budget_gap_qty,
+       ROUND(SUM(acc_abserr), 0) AS abs_error_qty
+FROM sku_base WHERE l1c IS NOT NULL AND l1c <> '#'
+GROUP BY sales_org, l1c, l1n
+UNION ALL
+SELECT sales_org, 2, l2c, COALESCE(l2n, l2c), l1c, l1c || '>' || l2c,
+       COUNT(DISTINCT material_id), SUM(demand_qty), ROUND(SUM(rev), 2),
+       ROUND((SUM(budget_scope_demand_qty) - SUM(budget_qty)) / NULLIF(SUM(budget_qty), 0) * 100, 1),
+       ROUND((SUM(yoy_cur) - SUM(yoy_pri)) / NULLIF(SUM(yoy_pri), 0) * 100, 1),
+       ROUND(SUM(acc_abserr) / NULLIF(SUM(acc_actual), 0) * 100, 1),
+       ROUND(SUM(acc_err)    / NULLIF(SUM(acc_actual), 0) * 100, 1),
+       ROUND((1 - LEAST(SUM(acc_abserr) / NULLIF(SUM(acc_actual), 0), 1)) * 100, 1),
+       SUM(stockout),
+       ROUND(SUM(budget_scope_demand_qty) - SUM(budget_qty), 0),
+       ROUND(SUM(acc_abserr), 0)
+FROM sku_base WHERE l1c IS NOT NULL AND l1c <> '#' AND l2c IS NOT NULL AND l2c <> '#'
+GROUP BY sales_org, l1c, l2c, l2n
+UNION ALL
+SELECT sales_org, 3, l3c, COALESCE(l3n, l3c), l1c || '>' || l2c, l1c || '>' || l2c || '>' || l3c,
+       COUNT(DISTINCT material_id), SUM(demand_qty), ROUND(SUM(rev), 2),
+       ROUND((SUM(budget_scope_demand_qty) - SUM(budget_qty)) / NULLIF(SUM(budget_qty), 0) * 100, 1),
+       ROUND((SUM(yoy_cur) - SUM(yoy_pri)) / NULLIF(SUM(yoy_pri), 0) * 100, 1),
+       ROUND(SUM(acc_abserr) / NULLIF(SUM(acc_actual), 0) * 100, 1),
+       ROUND(SUM(acc_err)    / NULLIF(SUM(acc_actual), 0) * 100, 1),
+       ROUND((1 - LEAST(SUM(acc_abserr) / NULLIF(SUM(acc_actual), 0), 1)) * 100, 1),
+       SUM(stockout),
+       ROUND(SUM(budget_scope_demand_qty) - SUM(budget_qty), 0),
+       ROUND(SUM(acc_abserr), 0)
+FROM sku_base WHERE l2c IS NOT NULL AND l2c <> '#' AND l3c IS NOT NULL AND l3c <> '#'
+GROUP BY sales_org, l1c, l2c, l3c, l3n
+UNION ALL
+SELECT sales_org, 4, l4c, COALESCE(l4n, l4c), l1c || '>' || l2c || '>' || l3c, l1c || '>' || l2c || '>' || l3c || '>' || l4c,
+       COUNT(DISTINCT material_id), SUM(demand_qty), ROUND(SUM(rev), 2),
+       ROUND((SUM(budget_scope_demand_qty) - SUM(budget_qty)) / NULLIF(SUM(budget_qty), 0) * 100, 1),
+       ROUND((SUM(yoy_cur) - SUM(yoy_pri)) / NULLIF(SUM(yoy_pri), 0) * 100, 1),
+       ROUND(SUM(acc_abserr) / NULLIF(SUM(acc_actual), 0) * 100, 1),
+       ROUND(SUM(acc_err)    / NULLIF(SUM(acc_actual), 0) * 100, 1),
+       ROUND((1 - LEAST(SUM(acc_abserr) / NULLIF(SUM(acc_actual), 0), 1)) * 100, 1),
+       SUM(stockout),
+       ROUND(SUM(budget_scope_demand_qty) - SUM(budget_qty), 0),
+       ROUND(SUM(acc_abserr), 0)
+FROM sku_base WHERE l3c IS NOT NULL AND l3c <> '#' AND l4c IS NOT NULL AND l4c <> '#'
+GROUP BY sales_org, l1c, l2c, l3c, l4c, l4n;
