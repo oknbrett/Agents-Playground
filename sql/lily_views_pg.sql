@@ -801,3 +801,182 @@ SELECT sales_org, 4, l4c, COALESCE(l4n, l4c), l1c || '>' || l2c || '>' || l3c, l
        ROUND(SUM(acc_abserr), 0)
 FROM sku_base WHERE l3c IS NOT NULL AND l3c <> '#' AND l4c IS NOT NULL AND l4c <> '#'
 GROUP BY sales_org, l1c, l2c, l3c, l4c, l4n;
+
+
+-- ============================================================================
+-- NODE LIFT (option A, 2026-06-25) — the category equivalents of the per-SKU
+-- views, so every SKU view also exists at product-hierarchy-node grain. Where
+-- vw_hierarchy_rollup is a one-row-per-node SNAPSHOT, these carry the things a
+-- snapshot can't: period-grain series, the forward series, vintage revisions,
+-- priced economics detail, and the SKU list inside a node.
+--
+-- BACKBONE: vw_material_node — the period-grain analogue of the rollup's
+-- sku_base CTE. One row per (material × level) with node_path/parent_path in the
+-- SAME convention as the rollup ('l1c>l2c>...'), so a node filters by node_path
+-- exactly like hierarchy_view. Each node view JOINs its OWN fact to the bridge
+-- and rolls up — so each draws its population from that fact (e.g. node history
+-- includes discontinued SKUs that vw_sku_divergence, being forecast-driven,
+-- would drop).
+--
+-- ACCURACY FREEZE: vw_forecast_accuracy / _bias / _actual_matched are CONSUMED
+-- here, never redefined — they stay frozen until Romuald answers the "single vs
+-- twin structure" question. Node bias is just the approved per-period weighting
+-- (sum F, sum A, then bias = sum(F-A)/sum(A)) lifted from SKU to node.
+-- ============================================================================
+
+-- material -> hierarchy node, one row PER LEVEL (L1..L4). Region-agnostic; the
+-- region comes from whichever fact this is joined to.
+CREATE OR REPLACE VIEW lily.vw_material_node AS
+WITH h AS (
+    SELECT dm.material_key AS material_id,
+           ph.level_1_code AS l1c, NULLIF(ph.level_1_description, 'Not assigned') AS l1n,
+           ph.level_2_code AS l2c, NULLIF(ph.level_2_description, 'Not assigned') AS l2n,
+           ph.level_3_code AS l3c, NULLIF(ph.level_3_description, 'Not assigned') AS l3n,
+           ph.level_4_code AS l4c, NULLIF(ph.level_4_description, 'Not assigned') AS l4n
+    FROM warehouse.dim_material dm
+    JOIN warehouse.dim_product_hierarchy ph ON ph.product_hierarchy_key = dm.product_hierarchy_key
+)
+SELECT material_id, 1 AS level, l1c AS node_code, COALESCE(l1n, l1c) AS node_name,
+       CAST(NULL AS text) AS parent_path, l1c AS node_path
+FROM h WHERE l1c IS NOT NULL AND l1c <> '#'
+UNION ALL
+SELECT material_id, 2, l2c, COALESCE(l2n, l2c), l1c, l1c || '>' || l2c
+FROM h WHERE l1c IS NOT NULL AND l1c <> '#' AND l2c IS NOT NULL AND l2c <> '#'
+UNION ALL
+SELECT material_id, 3, l3c, COALESCE(l3n, l3c), l1c || '>' || l2c, l1c || '>' || l2c || '>' || l3c
+FROM h WHERE l2c IS NOT NULL AND l2c <> '#' AND l3c IS NOT NULL AND l3c <> '#'
+UNION ALL
+SELECT material_id, 4, l4c, COALESCE(l4n, l4c), l1c || '>' || l2c || '>' || l3c,
+       l1c || '>' || l2c || '>' || l3c || '>' || l4c
+FROM h WHERE l3c IS NOT NULL AND l3c <> '#' AND l4c IS NOT NULL AND l4c <> '#';
+
+
+-- 1a. NODE FORECAST — forward demand series per node × period (≙ get_forecast).
+CREATE OR REPLACE VIEW lily.vw_node_forecast AS
+SELECT f.sales_org, n.level, n.node_code, n.node_name, n.node_path, n.parent_path,
+       f.fiscal_year, f.fiscal_period, f.fiscal_period_key,
+       SUM(f.forecast_quantity)                                  AS demand_qty,
+       ROUND(SUM(f.forecast_revenue_eur), 2)                     AS revenue_eur,
+       ROUND(SUM(f.forecast_margin_eur), 2)                      AS margin_eur,
+       COUNT(DISTINCT f.material_id)                             AS n_skus,
+       COUNT(*) FILTER (WHERE f.forecast_revenue_eur IS NOT NULL) AS priced_rows
+FROM lily.vw_forecast_latest f
+JOIN lily.vw_material_node n ON n.material_id = f.material_id
+GROUP BY f.sales_org, n.level, n.node_code, n.node_name, n.node_path, n.parent_path,
+         f.fiscal_year, f.fiscal_period, f.fiscal_period_key;
+
+-- 1b. NODE ECONOMICS — margin/price/COGS to node grain, PRICED periods only
+-- (same guard as vw_product_economics: out-year qty/COGS without revenue would
+-- fake a loss). ≙ product_economics.
+CREATE OR REPLACE VIEW lily.vw_node_economics AS
+WITH e AS (
+    SELECT f.sales_org, n.level, n.node_code, n.node_name, n.node_path, n.parent_path,
+           f.material_id, f.fiscal_period_key,
+           f.forecast_quantity, f.forecast_revenue_eur, f.forecast_cogs_eur, f.forecast_margin_eur,
+           (f.forecast_revenue_eur > 0) AS is_priced
+    FROM lily.vw_forecast_latest f
+    JOIN lily.vw_material_node n ON n.material_id = f.material_id
+)
+SELECT sales_org, level, node_code, node_name, node_path, parent_path,
+       COUNT(DISTINCT material_id)                                     AS n_skus,
+       SUM(forecast_quantity)                                         AS total_forecast_qty,
+       ROUND(SUM(forecast_revenue_eur), 2)                           AS total_forecast_revenue_eur,
+       ROUND(SUM(forecast_cogs_eur)   FILTER (WHERE is_priced), 2)   AS total_forecast_cogs_eur,
+       ROUND(SUM(forecast_margin_eur) FILTER (WHERE is_priced), 2)   AS total_forecast_margin_eur,
+       CASE WHEN SUM(forecast_revenue_eur) > 0
+            THEN ROUND(SUM(forecast_margin_eur) FILTER (WHERE is_priced)
+                       / SUM(forecast_revenue_eur) * 100, 1) END      AS margin_pct,
+       CASE WHEN SUM(forecast_quantity) FILTER (WHERE is_priced) > 0
+            THEN ROUND(SUM(forecast_revenue_eur)
+                       / SUM(forecast_quantity) FILTER (WHERE is_priced), 2) END AS avg_selling_price_eur,
+       CASE WHEN SUM(forecast_quantity) FILTER (WHERE is_priced) > 0
+            THEN ROUND(SUM(forecast_cogs_eur) FILTER (WHERE is_priced)
+                       / SUM(forecast_quantity) FILTER (WHERE is_priced), 2) END AS avg_unit_cogs_eur,
+       SUM(forecast_quantity) FILTER (WHERE is_priced)                AS priced_qty,
+       COUNT(DISTINCT fiscal_period_key) FILTER (WHERE is_priced)     AS priced_periods,
+       COUNT(DISTINCT fiscal_period_key)                             AS total_periods
+FROM e
+GROUP BY sales_org, level, node_code, node_name, node_path, parent_path;
+
+-- 2a. NODE ACTUALS HISTORY — real sold qty/revenue per node × period, all closed
+-- periods (≙ actuals_history). Population is the actuals fact, so it includes
+-- SKUs with no forward demand.
+CREATE OR REPLACE VIEW lily.vw_node_actuals_history AS
+SELECT a.sales_org, n.level, n.node_code, n.node_name, n.node_path, n.parent_path,
+       a.fiscal_year, a.fiscal_period, a.fiscal_period_key,
+       SUM(a.actual_quantity)                AS actual_qty,
+       ROUND(SUM(a.actual_revenue_eur), 2)   AS actual_revenue_eur,
+       COUNT(DISTINCT a.material_id)         AS n_skus
+FROM lily.vw_actuals_history a
+JOIN lily.vw_material_node n ON n.material_id = a.material_id
+GROUP BY a.sales_org, n.level, n.node_code, n.node_name, n.node_path, n.parent_path,
+         a.fiscal_year, a.fiscal_period, a.fiscal_period_key;
+
+-- 2b. NODE BIAS BY PERIOD — node-level signed bias per closed period, lag-2
+-- (≙ forecast_performance.bias_by_period). CONSUMES vw_forecast_actual_matched;
+-- approved weighting (sum F, sum A, then bias = sum(F-A)/sum(A)).
+CREATE OR REPLACE VIEW lily.vw_node_bias AS
+SELECT m.sales_org, n.level, n.node_code, n.node_name, n.node_path, n.parent_path,
+       m.fiscal_year, m.fiscal_period, m.fiscal_period_key,
+       SUM(m.actual_quantity)     AS actual_qty,
+       SUM(m.forecast_quantity)   AS forecast_qty,
+       ROUND(SUM(m.forecast_quantity - m.actual_quantity)
+             / NULLIF(SUM(m.actual_quantity), 0) * 100, 1) AS bias_pct
+FROM lily.vw_forecast_actual_matched m
+JOIN lily.vw_material_node n ON n.material_id = m.material_id
+WHERE m.lag = 2
+GROUP BY m.sales_org, n.level, n.node_code, n.node_name, n.node_path, n.parent_path,
+         m.fiscal_year, m.fiscal_period, m.fiscal_period_key;
+
+-- 3. NODE INVENTORY — coverage rolled to node + the stockout/overstock counts
+-- (≙ inventory_coverage). NOTE: node coverage_periods (summed stock / summed avg
+-- demand) can look healthy while individual SKUs starve — stockout_skus /
+-- overstock_skus are the precise signal; the tool also returns the per-SKU list.
+CREATE OR REPLACE VIEW lily.vw_node_inventory AS
+SELECT i.sales_org, n.level, n.node_code, n.node_name, n.node_path, n.parent_path,
+       COUNT(DISTINCT i.material_id)                                  AS n_skus,
+       SUM(i.stock_qty_ea)                                           AS stock_qty_ea,
+       ROUND(SUM(i.stock_value_eur), 2)                              AS stock_value_eur,
+       ROUND(SUM(i.avg_period_qty), 1)                               AS avg_period_qty,
+       SUM(i.total_future_qty)                                       AS total_future_qty,
+       CASE WHEN SUM(i.avg_period_qty) > 0
+            THEN ROUND(SUM(i.stock_qty_ea) / SUM(i.avg_period_qty), 1) END AS coverage_periods,
+       COUNT(*) FILTER (WHERE i.coverage_flag = 'STOCKOUT RISK')     AS stockout_skus,
+       COUNT(*) FILTER (WHERE i.coverage_flag = 'OVERSTOCK')         AS overstock_skus,
+       COUNT(*) FILTER (WHERE i.coverage_flag = 'OK')                AS ok_skus
+FROM lily.vw_inventory_coverage i
+JOIN lily.vw_material_node n ON n.material_id = i.material_id
+GROUP BY i.sales_org, n.level, n.node_code, n.node_name, n.node_path, n.parent_path;
+
+-- 4. NODE FORECAST REVISION — what changed at node level between the two latest
+-- vintages, per period (≙ vw_forecast_version_delta lifted to node).
+CREATE OR REPLACE VIEW lily.vw_node_forecast_revision AS
+SELECT d.sales_org, n.level, n.node_code, n.node_name, n.node_path, n.parent_path,
+       d.fiscal_year, d.fiscal_period, d.fiscal_period_key,
+       SUM(d.cur_qty)                          AS cur_qty,
+       SUM(d.pri_qty)                          AS pri_qty,
+       SUM(d.qty_delta)                        AS qty_delta,
+       CASE WHEN SUM(d.pri_qty) > 0
+            THEN ROUND(SUM(d.qty_delta) / SUM(d.pri_qty)::numeric * 100, 1) END AS qty_delta_pct,
+       ROUND(SUM(d.revenue_delta_eur), 2)      AS revenue_delta_eur,
+       COUNT(DISTINCT d.material_id)           AS n_skus
+FROM lily.vw_forecast_version_delta d
+JOIN lily.vw_material_node n ON n.material_id = d.material_id
+GROUP BY d.sales_org, n.level, n.node_code, n.node_name, n.node_path, n.parent_path,
+         d.fiscal_year, d.fiscal_period, d.fiscal_period_key;
+
+-- 5. NODE SKU SCAN — the unified within-node SKU scan: every member SKU with
+-- revenue + budget gap + YoY AND accuracy + inventory together (closes the
+-- divergence_scan gap, which lacks accuracy/inventory). SKU-grain; one row per
+-- (SKU × level) — the tool filters to a single node_path so each SKU appears
+-- once. Accuracy/inventory are LEFT-joined (a SKU may have neither).
+CREATE OR REPLACE VIEW lily.vw_node_sku_scan AS
+SELECT d.sales_org, n.level, n.node_code, n.node_name, n.node_path, n.parent_path,
+       d.material_id, d.l1_division, d.l2_category,
+       d.demand_qty, d.demand_vs_budget_pct, d.trailing_12m_revenue_eur, d.yoy_growth_pct,
+       a.accuracy_pct, a.wmape_pct, a.bias_pct, a.periods_scored,
+       i.coverage_periods, i.coverage_flag, i.stock_qty_ea
+FROM lily.vw_sku_divergence d
+JOIN lily.vw_material_node n ON n.material_id = d.material_id
+LEFT JOIN lily.vw_forecast_accuracy  a ON a.sales_org = d.sales_org AND a.material_id = d.material_id
+LEFT JOIN lily.vw_inventory_coverage i ON i.sales_org = d.sales_org AND i.material_id = d.material_id;

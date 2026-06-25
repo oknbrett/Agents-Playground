@@ -533,6 +533,193 @@ def hierarchy_view(sales_org: str | int, node: str | None = None, level: int = 2
     }
 
 
+# ── Node lift (option A) — category equivalents of the per-SKU tools ───────────
+# Two tools sit on the node-grain views (sql/lily_views_pg.sql):
+#   node_detail   — one node's forecast / economics / inventory / timeseries /
+#                   revision (the category versions of get_forecast,
+#                   product_economics, inventory_coverage, actuals_history +
+#                   bias_by_period, forecast revision).
+#   node_sku_scan — the unified SKU scan WITHIN a node (revenue + budget + YoY +
+#                   accuracy + inventory together).
+# Both address a node the same way hierarchy_view does (name or code, region-
+# scoped), via _resolve_node().
+
+_NODE_DETAIL_ASPECTS = ("forecast", "economics", "inventory", "timeseries", "revision")
+
+
+def _resolve_node(so: str, node: str) -> dict | None:
+    """Resolve a node name/code to its rollup row (node_path, level, totals) for
+    ONE region — same matching as hierarchy_view (shallowest level wins)."""
+    rows = _query(
+        f"SELECT {_HIER_COLS} FROM lily.vw_hierarchy_rollup "
+        f"WHERE sales_org = ? AND (LOWER(node_name) = LOWER(?) OR node_code = ?) "
+        f"ORDER BY level LIMIT 1", [so, str(node), str(node)])
+    return rows[0] if rows else None
+
+
+def _no_node(so: str, node: str) -> dict:
+    return {"error": f"No hierarchy node '{node}' found in region {so}.",
+            "hint": "Call hierarchy_view(sales_org) with no node to list the level-2 nodes."}
+
+
+def node_detail(sales_org: str | int, node: str, aspect: str = "forecast") -> dict:
+    """One product-hierarchy NODE's detail — the category equivalent of the per-SKU
+    tools. Region-scoped (sales_org required). Name a node (e.g. node='GROWING MEDIA'
+    or a code) and pick an `aspect`:
+
+      - 'forecast'    → forward demand series per period (≙ get_forecast).
+      - 'economics'   → margin / price / COGS over PRICED periods (≙ product_economics).
+      - 'inventory'   → node coverage + stockout/overstock counts AND the SKUs inside
+                        the node (≙ inventory_coverage). Node coverage can look healthy
+                        while individual SKUs starve — read stockout_skus + the SKU list.
+      - 'timeseries'  → actuals sold per period + lag-2 bias per period (≙ actuals_history
+                        + forecast_performance.bias_by_period).
+      - 'revision'    → what changed at node level between the two latest forecast
+                        vintages, per period (the node's forecast revision).
+
+    For the node's headline numbers + its children, use hierarchy_view; this is the
+    deeper, single-aspect read on one node. Use node_sku_scan to list the SKUs inside
+    a node with accuracy + inventory together."""
+    if sales_org is None:
+        return {"error": "sales_org (region) is required — node detail is region-scoped."}
+    if aspect not in _NODE_DETAIL_ASPECTS:
+        return {"error": f"Unknown aspect '{aspect}'.",
+                "valid_aspects": list(_NODE_DETAIL_ASPECTS)}
+    so = str(sales_org)
+    n = _resolve_node(so, node)
+    if not n:
+        return _no_node(so, node)
+    path, lvl = n["node_path"], n["level"]
+    head = {"sales_org": so, "node_name": n["node_name"], "node_code": n["node_code"],
+            "node_path": path, "level": lvl, "aspect": aspect}
+
+    if aspect == "forecast":
+        rows = _query(
+            "SELECT fiscal_year, fiscal_period, fiscal_period_key, demand_qty, "
+            "revenue_eur, margin_eur, n_skus, priced_rows "
+            "FROM lily.vw_node_forecast WHERE sales_org = ? AND node_path = ? "
+            "ORDER BY fiscal_year, fiscal_period", [so, path])
+        qtys = [r["demand_qty"] for r in rows]
+        return {**head, "records": rows, "summary": {
+            "periods": len(rows), "total_demand_qty": sum(qtys),
+            "min_period_qty": min(qtys) if qtys else None,
+            "max_period_qty": max(qtys) if qtys else None,
+            "avg_period_qty": round(sum(qtys) / len(qtys), 1) if qtys else None,
+        }, "pricing_note": "revenue_eur/margin_eur are null where pricing isn't loaded "
+                           "(out-year periods); priced_rows shows priced coverage."}
+
+    if aspect == "economics":
+        rows = _query(
+            "SELECT n_skus, total_forecast_qty, priced_qty, priced_periods, total_periods, "
+            "total_forecast_revenue_eur, total_forecast_cogs_eur, total_forecast_margin_eur, "
+            "margin_pct, avg_selling_price_eur, avg_unit_cogs_eur "
+            "FROM lily.vw_node_economics WHERE sales_org = ? AND node_path = ?", [so, path])
+        return {**head,
+                "note": "price/COGS/margin are over PRICED periods only; if priced_periods "
+                        "< total_periods, pricing isn't loaded for the full horizon.",
+                "economics": rows[0] if rows else None}
+
+    if aspect == "inventory":
+        node_row = _query(
+            "SELECT n_skus, stock_qty_ea, stock_value_eur, avg_period_qty, total_future_qty, "
+            "coverage_periods, stockout_skus, overstock_skus, ok_skus "
+            "FROM lily.vw_node_inventory WHERE sales_org = ? AND node_path = ?", [so, path])
+        skus = _query(
+            "SELECT material_id, l2_category, stock_qty_ea, coverage_periods, coverage_flag "
+            "FROM lily.vw_node_sku_scan WHERE sales_org = ? AND node_path = ? "
+            "AND coverage_flag IS NOT NULL "
+            "ORDER BY CASE coverage_flag WHEN 'STOCKOUT RISK' THEN 0 WHEN 'OVERSTOCK' THEN 1 "
+            "ELSE 2 END, coverage_periods NULLS LAST", [so, path])
+        return {**head,
+                "note": "Node coverage_periods (summed stock / summed avg demand) can look "
+                        "healthy while individual SKUs starve — stockout_skus and the SKU "
+                        "list are the precise signal. Inventory has no customer dimension.",
+                "node": node_row[0] if node_row else None,
+                "skus": skus}
+
+    if aspect == "timeseries":
+        actuals = _query(
+            "SELECT fiscal_year, fiscal_period, fiscal_period_key, actual_qty, "
+            "actual_revenue_eur, n_skus "
+            "FROM lily.vw_node_actuals_history WHERE sales_org = ? AND node_path = ? "
+            "ORDER BY fiscal_year, fiscal_period", [so, path])
+        bias = _query(
+            "SELECT fiscal_year, fiscal_period, fiscal_period_key, actual_qty, forecast_qty, bias_pct "
+            "FROM lily.vw_node_bias WHERE sales_org = ? AND node_path = ? "
+            "ORDER BY fiscal_year, fiscal_period", [so, path])
+        return {**head,
+                "metric_note": "actuals = real sold qty/revenue per period (full population, "
+                               "incl. SKUs with no forward forecast). bias_by_period = lag-2 "
+                               "signed bias (+ = over-forecast), summed F and A per node×period "
+                               "then bias = sum(F-A)/sum(A) — the approved weighting lifted to "
+                               "node. Bias population can exceed the rollup's (which is forecast-"
+                               "driven), so node bias need not equal hierarchy_view's headline.",
+                "actuals": actuals,
+                "bias_by_period": bias}
+
+    # revision
+    rows = _query(
+        "SELECT fiscal_year, fiscal_period, fiscal_period_key, cur_qty, pri_qty, "
+        "qty_delta, qty_delta_pct, revenue_delta_eur, n_skus "
+        "FROM lily.vw_node_forecast_revision WHERE sales_org = ? AND node_path = ? "
+        "ORDER BY fiscal_year, fiscal_period", [so, path])
+    tot_cur = sum((r["cur_qty"] or 0) for r in rows)
+    tot_pri = sum((r["pri_qty"] or 0) for r in rows)
+    return {**head,
+            "note": "Delta between the two latest weekly vintages (current − prior), per "
+                    "period. + = the latest cut raised the plan. Periods present in only one "
+                    "vintage show as new/dropped via the qty fields.",
+            "records": rows,
+            "summary": {"periods": len(rows), "total_cur_qty": tot_cur, "total_pri_qty": tot_pri,
+                        "total_qty_delta": tot_cur - tot_pri,
+                        "total_qty_delta_pct": round((tot_cur - tot_pri) / tot_pri * 100, 1) if tot_pri else None}}
+
+
+_NODE_SCAN_ORDER = {
+    "revenue": "trailing_12m_revenue_eur DESC NULLS LAST",
+    "budget": "ABS(demand_vs_budget_pct) DESC NULLS LAST",
+    "growth": "yoy_growth_pct DESC NULLS LAST",
+    "wmape": "wmape_pct DESC NULLS LAST",
+    "bias": "ABS(bias_pct) DESC NULLS LAST",
+}
+
+
+def node_sku_scan(sales_org: str | int, node: str, order_by: str = "revenue",
+                  n: int = 50) -> dict:
+    """The unified SKU scan WITHIN one node — every member SKU carrying demand-vs-
+    budget gap, trailing-12m revenue, YoY growth AND forecast accuracy/bias AND
+    inventory coverage TOGETHER (divergence_scan lacks accuracy+inventory). Region-
+    scoped; name a node (e.g. node='GROWING MEDIA' or a code). Use after hierarchy_view
+    points at a node and you want the SKUs inside it on one screen. order_by:
+    'revenue' (default), 'budget' (biggest plan-vs-target gap), 'growth', 'wmape'
+    (worst accuracy), 'bias' (most over/under-forecast)."""
+    if sales_org is None:
+        return {"error": "sales_org (region) is required — the scan is region-scoped."}
+    so = str(sales_org)
+    n_node = _resolve_node(so, node)
+    if not n_node:
+        return _no_node(so, node)
+    path = n_node["node_path"]
+    order = _NODE_SCAN_ORDER.get(order_by, _NODE_SCAN_ORDER["revenue"])
+    total = _one("SELECT COUNT(DISTINCT material_id) FROM lily.vw_node_sku_scan "
+                 "WHERE sales_org = ? AND node_path = ?", [so, path])
+    rows = _query(
+        f"SELECT material_id, l2_category, demand_qty, demand_vs_budget_pct, "
+        f"trailing_12m_revenue_eur, yoy_growth_pct, accuracy_pct, wmape_pct, bias_pct, "
+        f"periods_scored, coverage_periods, coverage_flag, stock_qty_ea "
+        f"FROM lily.vw_node_sku_scan WHERE sales_org = ? AND node_path = ? "
+        f"ORDER BY {order} LIMIT ?", [so, path, n])
+    return {
+        "sales_org": so, "node_name": n_node["node_name"], "node_code": n_node["node_code"],
+        "node_path": path, "level": n_node["level"], "ordered_by": order_by,
+        "returned": len(rows), "total_skus_in_node": total,
+        "note": "Every SKU in the node with budget gap, revenue, YoY, accuracy/bias "
+                "(lag-2) and inventory together. accuracy/inventory are null where a SKU "
+                "has no scored history or no stock↔demand overlap. Raise n for the full set.",
+        "records": rows,
+    }
+
+
 def forecast_performance(material_id: str, sales_org: int | None = None,
                          customer_code: str | None = None, lag: int = 2) -> dict:
     """Forecast accuracy and bias for a SKU — how recent forecasts actually

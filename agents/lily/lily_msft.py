@@ -5,10 +5,12 @@ with GPT 5.4 via Azure AI Foundry. The framework handles the agentic tool-callin
 loop internally — Lily keeps calling tools until she decides she has enough evidence,
 same as the Anthropic version, but we don't write the loop ourselves.
 
-All 15 tools are registered by passing the Python functions directly — the framework
+Tools are registered by passing the Python functions directly — the framework
 discovers names, descriptions (from docstrings), and parameter schemas (from type
 annotations). The system prompt (`LILY_SYSTEM_PROMPT`) is imported from lily.py so
-both backends stay in sync.
+both backends stay in sync. NOTE: this backend hand-lists its tools (below) rather
+than importing TOOL_DEFINITIONS, so keep AGENT_TOOLS in sync with lily.py whenever a
+tool is added — it must include the hierarchy + node-lift tools.
 
 Required environment:
     AZURE_AI_PROJECT_ENDPOINT — Foundry project endpoint
@@ -59,6 +61,9 @@ AGENT_TOOLS = [
     tools_module.sku_performance_scan,
     tools_module.family_scan,
     tools_module.divergence_scan,
+    tools_module.hierarchy_view,
+    tools_module.node_detail,
+    tools_module.node_sku_scan,
     tools_module.actuals_history,
     tools_module.latest_actuals,
     tools_module.load_data,
@@ -94,7 +99,7 @@ def _make_client() -> FoundryChatClient:
 
 
 def _make_agent(client: FoundryChatClient) -> Agent:
-    """Create Lily with her 15 data + research tools."""
+    """Create Lily with her full data + research toolset (see AGENT_TOOLS)."""
     return client.as_agent(
         name="Lily",
         instructions=LILY_SYSTEM_PROMPT,

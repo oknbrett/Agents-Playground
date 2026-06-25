@@ -292,6 +292,56 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "node_detail",
+        "description": (
+            "ONE product-hierarchy NODE's detail — the CATEGORY equivalent of the "
+            "per-SKU tools. Region-scoped (sales_org required). Name a node (e.g. "
+            "node='GROWING MEDIA' or its code) and pick an aspect: 'forecast' (forward "
+            "demand series ≙ get_forecast), 'economics' (margin/price/COGS, priced "
+            "periods ≙ product_economics), 'inventory' (node coverage + stockout/"
+            "overstock counts AND the SKUs inside ≙ inventory_coverage), 'timeseries' "
+            "(actuals sold per period + lag-2 bias per period ≙ actuals_history + "
+            "bias-by-period), 'revision' (what changed at node level between the two "
+            "latest forecast vintages). Use hierarchy_view for a node's headline + "
+            "children; use this for the deeper single-aspect read on one node."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sales_org": _SALES_ORG,
+                "node": {"type": "string", "description": "A hierarchy node by name or code (e.g. 'GROWING MEDIA', 'WEEDKILLERS')."},
+                "aspect": {"type": "string",
+                           "enum": ["forecast", "economics", "inventory", "timeseries", "revision"],
+                           "description": "Which category view to return (default 'forecast')."},
+            },
+            "required": ["sales_org", "node"],
+        },
+    },
+    {
+        "name": "node_sku_scan",
+        "description": (
+            "The unified SKU scan WITHIN one node — every member SKU carrying demand-vs-"
+            "budget gap, trailing-12m revenue, YoY growth AND forecast accuracy/bias AND "
+            "inventory coverage TOGETHER (divergence_scan lacks accuracy+inventory). "
+            "Region-scoped; name a node. Use after hierarchy_view points at a node and "
+            "you want the SKUs inside it on one screen. order_by: 'revenue' (default), "
+            "'budget' (biggest plan-vs-target gap), 'growth', 'wmape' (worst accuracy), "
+            "'bias' (most over/under-forecast)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sales_org": _SALES_ORG,
+                "node": {"type": "string", "description": "A hierarchy node by name or code (e.g. 'GROWING MEDIA')."},
+                "order_by": {"type": "string",
+                             "enum": ["revenue", "budget", "growth", "wmape", "bias"],
+                             "description": "How to order the SKUs (default 'revenue')."},
+                "n": {"type": "integer", "description": "How many SKUs to return (default 50)."},
+            },
+            "required": ["sales_org", "node"],
+        },
+    },
+    {
         "name": "forecast_performance",
         "description": (
             "Forecast ACCURACY and BIAS for a SKU — how recent forecasts actually "
@@ -429,6 +479,8 @@ TOOL_DISPATCH: dict[str, Any] = {
     "family_scan": tools_module.family_scan,
     "divergence_scan": tools_module.divergence_scan,
     "hierarchy_view": tools_module.hierarchy_view,
+    "node_detail": tools_module.node_detail,
+    "node_sku_scan": tools_module.node_sku_scan,
     "inventory_coverage": tools_module.inventory_coverage,
     "product_economics": tools_module.product_economics,
     "top_skus": tools_module.top_skus,
