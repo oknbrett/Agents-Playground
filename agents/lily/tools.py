@@ -143,9 +143,10 @@ def get_overview() -> dict:
     customers = [r["customer_code"] for r in _query(
         "SELECT DISTINCT customer_code FROM lily.vw_forecast_latest ORDER BY customer_code")]
     span = _query(
-        "SELECT MIN(fiscal_period_key) AS first_period, "
-        "MAX(fiscal_period_key) AS last_period, "
-        "MIN(forecast_version_key) AS version, "
+        "SELECT "
+        "(SELECT fiscal_period_key FROM lily.vw_forecast_latest ORDER BY fiscal_year, fiscal_period LIMIT 1) AS first_period, "
+        "(SELECT fiscal_period_key FROM lily.vw_forecast_latest ORDER BY fiscal_year DESC, fiscal_period DESC LIMIT 1) AS last_period, "
+        "(SELECT forecast_version_key FROM lily.vw_latest_vintage) AS version, "
         "COUNT(DISTINCT material_id) AS materials, "
         "COUNT(DISTINCT customer_code) AS customers "
         "FROM lily.vw_forecast_latest")[0]
@@ -205,7 +206,9 @@ def get_forecast(material_id: str, sales_org: int | None = None,
         f"SELECT fiscal_year, fiscal_period, fiscal_period_key, "
         f"SUM(forecast_quantity) AS qty, "
         f"ROUND(SUM(forecast_revenue_eur), 2) AS revenue_eur, "
-        f"ROUND(SUM(forecast_margin_eur), 2) AS margin_eur "
+        f"ROUND(SUM(forecast_margin_eur), 2) AS margin_eur, "
+        f"COUNT(*) FILTER (WHERE forecast_revenue_eur IS NOT NULL) AS priced_rows, "
+        f"COUNT(*) AS rows "
         f"FROM lily.vw_forecast_latest WHERE {clause} "
         f"GROUP BY fiscal_year, fiscal_period, fiscal_period_key "
         f"ORDER BY fiscal_year, fiscal_period", params)
@@ -232,6 +235,8 @@ def get_forecast(material_id: str, sales_org: int | None = None,
         "customer_code": customer_code or "all",
         "records": rows,
         "summary": summary,
+        "pricing_note": "revenue_eur and margin_eur are null where pricing is not loaded; "
+                        "priced_rows shows whether a period has priced forecast rows.",
     }
 
 
@@ -255,23 +260,33 @@ def demand_vs_budget(material_id: str, sales_org: int | None = None,
         f"SUM(demand_qty) - SUM(budget_qty) AS qty_delta, "
         f"CASE WHEN SUM(budget_qty) > 0 THEN "
         f"  ROUND((SUM(demand_qty) - SUM(budget_qty)) / SUM(budget_qty)::numeric * 100, 1) END AS qty_delta_pct, "
-        f"ROUND(SUM(value_delta_eur), 2) AS value_delta_eur "
+        f"ROUND(SUM(value_delta_eur), 2) AS value_delta_eur, "
+        f"COUNT(*) FILTER (WHERE comparison_status = 'OVERLAP') AS overlap_rows, "
+        f"COUNT(*) FILTER (WHERE comparison_status = 'DEMAND_ONLY') AS demand_only_rows, "
+        f"COUNT(*) FILTER (WHERE comparison_status = 'BUDGET_ONLY') AS budget_only_rows "
         f"FROM lily.vw_demand_vs_budget WHERE {clause} "
         f"GROUP BY fiscal_year, fiscal_period, fiscal_period_key "
         f"ORDER BY fiscal_year, fiscal_period", params)
     if not rows:
         return {"material_id": str(material_id), "records": [],
                 "note": "No overlapping demand+budget rows for this scope."}
-    deltas = [r["qty_delta_pct"] for r in rows if r["qty_delta_pct"] is not None]
+    total_budget = sum((r["budget_qty"] or 0) for r in rows)
+    total_delta = sum((r["qty_delta"] or 0) for r in rows)
     return {
         "material_id": str(material_id),
         "grain": "per period" + ("" if customer_code else ", summed across all customers"),
+        "basis_note": "Rows include OVERLAP, DEMAND_ONLY, and BUDGET_ONLY populations; "
+                      "qty_delta_pct is only defined where budget quantity exists. "
+                      "value_delta_eur is null when demand revenue is unpriced.",
         "records": rows,
         "summary": {
             "periods": len(rows),
             "periods_demand_above_budget": sum(1 for r in rows if r["qty_delta"] and r["qty_delta"] > 0),
             "periods_demand_below_budget": sum(1 for r in rows if r["qty_delta"] and r["qty_delta"] < 0),
-            "avg_delta_pct": round(sum(deltas) / len(deltas), 1) if deltas else None,
+            "total_delta_pct": round(total_delta / total_budget * 100, 1) if total_budget else None,
+            "overlap_rows": sum((r["overlap_rows"] or 0) for r in rows),
+            "demand_only_rows": sum((r["demand_only_rows"] or 0) for r in rows),
+            "budget_only_rows": sum((r["budget_only_rows"] or 0) for r in rows),
         },
     }
 
@@ -292,7 +307,8 @@ def inventory_coverage(material_id: str, sales_org: int | None = None) -> dict:
         where.append("sales_org = ?"); params.append(sales_org)
     rows = _query(
         f"SELECT sales_org, stock_qty_ea, avg_period_qty, total_future_qty, "
-        f"future_periods, coverage_periods, coverage_flag, has_non_ea_stock, uom_present "
+        f"future_periods, coverage_periods, coverage_flag, has_non_ea_stock, uom_present, "
+        f"zero_demand_periods, active_demand_periods, active_avg_period_qty, active_coverage_periods "
         f"FROM lily.vw_inventory_coverage WHERE {' AND '.join(where)} "
         f"ORDER BY coverage_periods NULLS LAST", params)
     if not rows:
@@ -336,6 +352,8 @@ def top_skus(fiscal_year: int, fiscal_period: int, sales_org: int | None = None,
     params: list = [fiscal_year, fiscal_period, n]
     if sales_org is not None:
         where.append("sales_org = ?"); params.append(sales_org)
+    if by == "revenue":
+        where.append("total_revenue_eur IS NOT NULL")
     rows = _query(
         f"SELECT sales_org, material_id, total_qty, total_revenue_eur, "
         f"total_margin_eur, {rank_col} AS rank "
@@ -354,16 +372,23 @@ _FAMILY_ORDER = {
 
 def family_scan(order_by: str = "revenue") -> dict:
     """Cross-family rollup in ONE call: every product family (L1/L2 hierarchy)
-    with its trailing-12m revenue, average demand-vs-budget gap %, average YoY
+    with its trailing-12m revenue, weighted demand-vs-budget gap %, weighted YTD YoY
     growth, and SKU count. Use this FIRST for 'biggest family' / 'which category'
     questions, then drill with divergence_scan(category=...). Ordered by revenue
     by default ('budget' or 'growth' also available)."""
     order = _FAMILY_ORDER.get(order_by, _FAMILY_ORDER["revenue"])
     rows = _query(
         f"SELECT l1_division, l2_category, n_skus, family_trailing_revenue_eur, "
-        f"avg_demand_vs_budget_pct, avg_yoy_growth_pct "
+        f"avg_demand_vs_budget_pct, avg_yoy_growth_pct, "
+        f"skus_with_budget_comparison, skus_with_yoy_comparison "
         f"FROM lily.vw_family_divergence ORDER BY {order}")
-    return {"ordered_by": order_by, "count": len(rows), "records": rows}
+    return {
+        "ordered_by": order_by,
+        "metric_note": "Family percentages are weighted from summed quantities, not averages of SKU percentages. "
+                       "YoY is current fiscal-year YTD vs the same prior-year periods.",
+        "count": len(rows),
+        "records": rows,
+    }
 
 
 _DIVERGENCE_ORDER = {
@@ -388,7 +413,10 @@ def divergence_scan(category: str | None = None, order_by: str = "revenue",
     total = _one(f"SELECT COUNT(*) FROM lily.vw_sku_divergence {wc}", params)
     rows = _query(
         f"SELECT material_id, l2_category, demand_qty, "
-        f"demand_vs_budget_pct, trailing_12m_revenue_eur, yoy_growth_pct "
+        f"demand_vs_budget_pct, trailing_12m_revenue_eur, yoy_growth_pct, "
+        f"budget_scope_demand_qty, budget_qty, budget_compared_periods, "
+        f"demand_only_periods, budget_only_periods, yoy_current_ytd_qty, "
+        f"yoy_prior_ytd_qty, yoy_compared_periods, yoy_basis "
         f"FROM lily.vw_sku_divergence {wc} ORDER BY {order} LIMIT ?", params + [n])
     return {
         "category": category or "all families",
@@ -396,8 +424,10 @@ def divergence_scan(category: str | None = None, order_by: str = "revenue",
         "returned": len(rows),
         "total_matching": total,
         "note": ("One-call summary of every SKU in scope: demand qty, budget gap, "
-                 "revenue, YoY growth. Filter by category or raise n for the full set "
-                 "— only the LIMIT trims, nothing is sampled."),
+                 "revenue, YoY growth. Budget gap is over periods where demand and "
+                 "budget overlap; YoY is current FY YTD vs prior FY same periods. "
+                 "Filter by category or raise n for the full set — only the LIMIT "
+                 "trims, nothing is sampled."),
         "records": rows,
     }
 
@@ -417,12 +447,25 @@ def forecast_performance(material_id: str, sales_org: int | None = None,
         where.append("customer_code = ?"); params.append(customer_code)
     clause = " AND ".join(where)
 
+    # Approved calc (Romuald/Kenton): aggregate forecast & actual to material × period
+    # (sum across customers) FIRST, then take the absolute error — so over/under across
+    # customers nets off. WMAPE = SUM|F-A|/SUM(A); Accuracy = 1 - min(MAE, 1).
     card = _query(
-        f"SELECT COUNT(DISTINCT fiscal_period_key) AS periods_scored, "
-        f"SUM(actual_quantity) AS total_actual_qty, "
-        f"ROUND(SUM(abs_error_qty) / NULLIF(SUM(actual_quantity), 0) * 100, 1) AS wmape_pct, "
-        f"ROUND(SUM(error_qty)     / NULLIF(SUM(actual_quantity), 0) * 100, 1) AS bias_pct "
-        f"FROM lily.vw_forecast_actual_matched WHERE {clause}", params)
+        f"WITH per_period AS ("
+        f"  SELECT fiscal_period_key, SUM(forecast_quantity) AS f, SUM(actual_quantity) AS a, "
+        f"         COUNT(*) AS obs, "
+        f"         COUNT(*) FILTER (WHERE match_status='OVERLAP') AS ov, "
+        f"         COUNT(*) FILTER (WHERE match_status='FORECAST_ONLY') AS fo, "
+        f"         COUNT(*) FILTER (WHERE match_status='ACTUAL_ONLY') AS ao "
+        f"  FROM lily.vw_forecast_actual_matched WHERE {clause} "
+        f"  GROUP BY fiscal_period_key) "
+        f"SELECT COUNT(*) AS periods_scored, SUM(a) AS total_actual_qty, "
+        f"ROUND(SUM(ABS(f-a)) / NULLIF(SUM(a),0) * 100, 1) AS wmape_pct, "
+        f"ROUND(SUM(f-a)      / NULLIF(SUM(a),0) * 100, 1) AS bias_pct, "
+        f"ROUND((1 - LEAST(SUM(ABS(f-a)) / NULLIF(SUM(a),0), 1)) * 100, 1) AS accuracy_pct, "
+        f"SUM(obs) AS observations_scored, SUM(ov) AS overlap_rows, "
+        f"SUM(fo) AS forecast_only_rows, SUM(ao) AS actual_only_rows "
+        f"FROM per_period", params)
     if not card or not card[0]["periods_scored"]:
         return {"material_id": str(material_id), "records": [],
                 "note": f"No lag-{lag} forecast history for this scope."}
@@ -436,7 +479,10 @@ def forecast_performance(material_id: str, sales_org: int | None = None,
     return {
         "material_id": str(material_id),
         "lag": lag,
-        "metric_note": "WMAPE = sum|F-A|/sum(A); bias = sum(F-A)/sum(A); +bias = over-forecast.",
+        "metric_note": "Approved calc: forecast & actual summed across customers per "
+                       "material×period, then WMAPE = sum|F-A|/sum(A), bias = sum(F-A)/sum(A) "
+                       "(+ = over-forecast), Accuracy = 1 - min(MAE,1). Includes overlap, "
+                       "forecast-only and actual-only rows for closed periods.",
         "scorecard": card[0],
         "bias_by_period": trend,
     }
@@ -504,12 +550,28 @@ def actuals_history(material_id: str, sales_org: int | None = None,
                 "note": "No actuals history for this scope."}
 
     by_year: dict[int, float] = {}
+    periods_by_year: dict[int, set[int]] = {}
     for r in rows:
         by_year[r["fiscal_year"]] = by_year.get(r["fiscal_year"], 0) + (r["actual_qty"] or 0)
+        periods_by_year.setdefault(r["fiscal_year"], set()).add(r["fiscal_period"])
     years = sorted(by_year)
-    yoy = None
-    if len(years) >= 2 and by_year[years[-2]]:
-        yoy = round((by_year[years[-1]] - by_year[years[-2]]) / by_year[years[-2]] * 100, 1)
+    full_years = [y for y in years if len(periods_by_year.get(y, set())) == 12]
+    full_year_yoy = None
+    if len(full_years) >= 2 and by_year[full_years[-2]]:
+        full_year_yoy = round((by_year[full_years[-1]] - by_year[full_years[-2]]) / by_year[full_years[-2]] * 100, 1)
+    latest_ytd_yoy = None
+    ytd_basis = None
+    if len(years) >= 2:
+        latest_year, prior_year = years[-1], years[-1] - 1
+        if prior_year in periods_by_year:
+            cutoff = max(periods_by_year[latest_year])
+            cur_ytd = sum((r["actual_qty"] or 0) for r in rows
+                          if r["fiscal_year"] == latest_year and r["fiscal_period"] <= cutoff)
+            prior_ytd = sum((r["actual_qty"] or 0) for r in rows
+                            if r["fiscal_year"] == prior_year and r["fiscal_period"] <= cutoff)
+            if prior_ytd:
+                latest_ytd_yoy = round((cur_ytd - prior_ytd) / prior_ytd * 100, 1)
+            ytd_basis = f"FY{latest_year} P1-P{cutoff} vs FY{prior_year} P1-P{cutoff}"
     return {
         "material_id": str(material_id),
         "grain": "per period" + ("" if customer_code else ", summed across all customers"),
@@ -518,7 +580,10 @@ def actuals_history(material_id: str, sales_org: int | None = None,
             "periods": len(rows),
             "years_covered": years,
             "total_qty_by_year": {str(y): round(by_year[y]) for y in years},
-            "latest_full_year_yoy_pct": yoy,
+            "loaded_periods_by_year": {str(y): len(periods_by_year[y]) for y in years},
+            "latest_full_year_yoy_pct": full_year_yoy,
+            "latest_ytd_yoy_pct": latest_ytd_yoy,
+            "latest_ytd_yoy_basis": ytd_basis,
         },
     }
 
