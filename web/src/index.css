@@ -282,6 +282,12 @@ a { cursor: pointer; }
   flex-direction: column;
   gap: 6px;
 }
+.welcome-logo {
+  height: 48px;
+  width: auto;
+  margin-bottom: 8px;
+  opacity: 0.85;
+}
 .greeting {
   font-family: var(--font);
   font-size: 28px;

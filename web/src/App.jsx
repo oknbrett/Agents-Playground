@@ -1338,6 +1338,7 @@ export default function App() {
           <div className={`welcome${welcomeExiting ? ' welcome-exiting' : ''}`}>
             <BotanicalBg />
             <div className="welcome-content">
+              <img src="/evergreen-logo.png" alt="Evergreen Garden Care" className="welcome-logo" />
               <h1 className="greeting">{greeting}</h1>
               <p className="subline">{subline}</p>
             </div>
