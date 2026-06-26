@@ -896,6 +896,170 @@ def latest_actuals(material_id: str, sales_org: int | None = None,
             "note": "Latest closed period only; no history (that's Billy)."}
 
 
+# ── Customer mirror ────────────────────────────────────────────────────────
+
+_CUSTOMER_DETAIL_ASPECTS = ("forecast", "economics", "timeseries", "revision")
+
+
+def customer_detail(sales_org: str | int, customer_code: str,
+                    node: str | None = None, aspect: str = "forecast") -> dict:
+    """One CUSTOMER's detail at a product-hierarchy node (or whole portfolio if
+    node is omitted / level=1). Region-scoped (sales_org required). Aspects:
+    forecast, economics, timeseries (actuals + bias), revision."""
+    if sales_org is None:
+        return {"error": "sales_org (region) is required."}
+    if customer_code is None:
+        return {"error": "customer_code is required."}
+    if aspect not in _CUSTOMER_DETAIL_ASPECTS:
+        return {"error": f"Unknown aspect '{aspect}'.",
+                "valid_aspects": list(_CUSTOMER_DETAIL_ASPECTS),
+                "note": "Inventory has no customer dimension — use node_detail or "
+                        "inventory_coverage for inventory."}
+    so = str(sales_org)
+    cc = str(customer_code)
+
+    if node is not None:
+        n = _resolve_node(so, node)
+        if not n:
+            return _no_node(so, node)
+        path, lvl = n["node_path"], n["level"]
+        head = {"sales_org": so, "customer_code": cc,
+                "node_name": n["node_name"], "node_code": n["node_code"],
+                "node_path": path, "level": lvl, "aspect": aspect}
+        path_filter = "AND node_path = ?"
+        params_base: list = [so, cc, path]
+    else:
+        head = {"sales_org": so, "customer_code": cc,
+                "node": "ALL (whole portfolio)", "level": 1, "aspect": aspect}
+        path_filter = "AND level = 1"
+        params_base = [so, cc]
+
+    if aspect == "forecast":
+        rows = _query(
+            f"SELECT customer_name, node_name, fiscal_year, fiscal_period, fiscal_period_key, "
+            f"demand_qty, revenue_eur, margin_eur, n_skus, priced_rows "
+            f"FROM lily.vw_customer_forecast "
+            f"WHERE sales_org = ? AND customer_code = ? {path_filter} "
+            f"ORDER BY fiscal_year, fiscal_period", params_base)
+        if rows and rows[0].get("customer_name"):
+            head["customer_name"] = rows[0]["customer_name"]
+        qtys = [r["demand_qty"] for r in rows]
+        return {**head, "records": rows, "summary": {
+            "periods": len(rows), "total_demand_qty": sum(qtys),
+            "min_period_qty": min(qtys) if qtys else None,
+            "max_period_qty": max(qtys) if qtys else None,
+            "avg_period_qty": round(sum(qtys) / len(qtys), 1) if qtys else None,
+        }}
+
+    if aspect == "economics":
+        rows = _query(
+            f"SELECT customer_name, node_name, n_skus, total_forecast_qty, priced_qty, "
+            f"priced_periods, total_periods, total_forecast_revenue_eur, "
+            f"total_forecast_cogs_eur, total_forecast_margin_eur, margin_pct, "
+            f"avg_selling_price_eur, avg_unit_cogs_eur "
+            f"FROM lily.vw_customer_economics "
+            f"WHERE sales_org = ? AND customer_code = ? {path_filter}", params_base)
+        if rows and rows[0].get("customer_name"):
+            head["customer_name"] = rows[0]["customer_name"]
+        return {**head,
+                "note": "price/COGS/margin are over PRICED periods only.",
+                "economics": rows[0] if rows else None}
+
+    if aspect == "timeseries":
+        actuals = _query(
+            f"SELECT customer_name, node_name, fiscal_year, fiscal_period, fiscal_period_key, "
+            f"actual_qty, actual_revenue_eur, n_skus "
+            f"FROM lily.vw_customer_actuals_history "
+            f"WHERE sales_org = ? AND customer_code = ? {path_filter} "
+            f"ORDER BY fiscal_year, fiscal_period", params_base)
+        bias = _query(
+            f"SELECT customer_name, node_name, fiscal_year, fiscal_period, fiscal_period_key, "
+            f"actual_qty, forecast_qty, bias_pct "
+            f"FROM lily.vw_customer_bias "
+            f"WHERE sales_org = ? AND customer_code = ? {path_filter} "
+            f"ORDER BY fiscal_year, fiscal_period", params_base)
+        if actuals and actuals[0].get("customer_name"):
+            head["customer_name"] = actuals[0]["customer_name"]
+        return {**head,
+                "metric_note": "actuals = real sold qty/revenue. bias = lag-2 signed "
+                               "bias at customer × node grain (+ = over-forecast). "
+                               "This is the customer-specific split, not the approved "
+                               "material-only grain used for SKU accuracy.",
+                "actuals": actuals, "bias_by_period": bias}
+
+    # revision
+    rows = _query(
+        f"SELECT customer_name, node_name, fiscal_year, fiscal_period, fiscal_period_key, "
+        f"cur_qty, pri_qty, qty_delta, qty_delta_pct, revenue_delta_eur, n_skus "
+        f"FROM lily.vw_customer_forecast_revision "
+        f"WHERE sales_org = ? AND customer_code = ? {path_filter} "
+        f"ORDER BY fiscal_year, fiscal_period", params_base)
+    if rows and rows[0].get("customer_name"):
+        head["customer_name"] = rows[0]["customer_name"]
+    tot_cur = sum((r["cur_qty"] or 0) for r in rows)
+    tot_pri = sum((r["pri_qty"] or 0) for r in rows)
+    return {**head,
+            "note": "Delta between the two latest weekly vintages (current − prior). "
+                    "+ = the latest cut raised the plan.",
+            "records": rows,
+            "summary": {"periods": len(rows), "total_cur_qty": tot_cur,
+                        "total_pri_qty": tot_pri, "total_qty_delta": tot_cur - tot_pri,
+                        "total_qty_delta_pct": round((tot_cur - tot_pri) / tot_pri * 100, 1) if tot_pri else None}}
+
+
+_CUSTOMER_SCAN_ORDER = {
+    "revenue": "trailing_12m_revenue_eur DESC NULLS LAST",
+    "budget": "ABS(demand_vs_budget_pct) DESC NULLS LAST",
+    "growth": "yoy_growth_pct DESC NULLS LAST",
+    "wmape": "wmape_pct DESC NULLS LAST",
+    "bias": "ABS(bias_pct) DESC NULLS LAST",
+    "demand": "demand_qty DESC NULLS LAST",
+}
+
+
+def customer_scan(sales_org: str | int, node: str | None = None,
+                  order_by: str = "revenue", n: int = 50) -> dict:
+    """Triage scan: which CUSTOMERS matter in this region (or within a node)?
+    One row per customer with demand, budget gap, trailing revenue, YoY, accuracy,
+    bias. Optionally scoped to a product-hierarchy node."""
+    if sales_org is None:
+        return {"error": "sales_org (region) is required."}
+    so = str(sales_org)
+
+    if node is not None:
+        resolved = _resolve_node(so, node)
+        if not resolved:
+            return _no_node(so, node)
+        path = resolved["node_path"]
+        lvl = resolved["level"]
+        path_filter = "AND node_path = ?"
+        params_base: list = [so, path]
+        scope = {"node_name": resolved["node_name"], "node_code": resolved["node_code"],
+                 "node_path": path, "level": lvl}
+    else:
+        path_filter = "AND level = 1"
+        params_base = [so]
+        scope = {"node": "ALL (region-wide)", "level": 1}
+
+    order = _CUSTOMER_SCAN_ORDER.get(order_by, _CUSTOMER_SCAN_ORDER["revenue"])
+    total = _one(f"SELECT COUNT(DISTINCT customer_code) FROM lily.vw_customer_scan "
+                 f"WHERE sales_org = ? {path_filter}", params_base)
+    rows = _query(
+        f"SELECT customer_code, customer_name, demand_qty, demand_vs_budget_pct, "
+        f"trailing_12m_revenue_eur, yoy_growth_pct, accuracy_pct, wmape_pct, bias_pct, "
+        f"periods_scored, n_skus "
+        f"FROM lily.vw_customer_scan WHERE sales_org = ? {path_filter} "
+        f"ORDER BY {order} LIMIT ?", params_base + [n])
+    return {
+        "sales_org": so, **scope, "ordered_by": order_by,
+        "returned": len(rows), "total_customers": total,
+        "note": "One row per customer with demand, budget gap (null where no budget), "
+                "trailing-12m revenue, YoY, and forecast accuracy/bias (lag-2, customer-"
+                "specific grain). No inventory — inventory has no customer dimension.",
+        "records": rows,
+    }
+
+
 # Backward-compat: the agent loop calls load_data() first. Keep the name as an
 # orientation call; the file_path arg is ignored (data now lives in the DB).
 def load_data(file_path: str | None = None) -> dict:

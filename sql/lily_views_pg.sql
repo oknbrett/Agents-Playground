@@ -980,3 +980,208 @@ FROM lily.vw_sku_divergence d
 JOIN lily.vw_material_node n ON n.material_id = d.material_id
 LEFT JOIN lily.vw_forecast_accuracy  a ON a.sales_org = d.sales_org AND a.material_id = d.material_id
 LEFT JOIN lily.vw_inventory_coverage i ON i.sales_org = d.sales_org AND i.material_id = d.material_id;
+
+
+-- ============================================================================
+-- CUSTOMER MIRROR — the same lift at CUSTOMER × NODE grain. Every node view
+-- above sums across customers; these preserve customer_code so Lily can answer
+-- "how is customer X doing in category Y?". Inventory has no customer dimension
+-- in the warehouse (stock is by plant/material), so there is no customer
+-- inventory view. Customer names come from warehouse.dim_customer_group.
+-- ============================================================================
+
+-- 1a. CUSTOMER FORECAST — forward demand series per customer × node × period.
+CREATE OR REPLACE VIEW lily.vw_customer_forecast AS
+SELECT f.sales_org, f.customer_code,
+       cg.customer_group_name AS customer_name,
+       n.level, n.node_code, n.node_name, n.node_path, n.parent_path,
+       f.fiscal_year, f.fiscal_period, f.fiscal_period_key,
+       SUM(f.forecast_quantity)                                  AS demand_qty,
+       ROUND(SUM(f.forecast_revenue_eur), 2)                     AS revenue_eur,
+       ROUND(SUM(f.forecast_margin_eur), 2)                      AS margin_eur,
+       COUNT(DISTINCT f.material_id)                             AS n_skus,
+       COUNT(*) FILTER (WHERE f.forecast_revenue_eur IS NOT NULL) AS priced_rows
+FROM lily.vw_forecast_latest f
+JOIN lily.vw_material_node n ON n.material_id = f.material_id
+LEFT JOIN warehouse.dim_customer_group cg ON cg.customer_group_key = f.customer_code
+GROUP BY f.sales_org, f.customer_code, cg.customer_group_name,
+         n.level, n.node_code, n.node_name, n.node_path, n.parent_path,
+         f.fiscal_year, f.fiscal_period, f.fiscal_period_key;
+
+-- 1b. CUSTOMER ECONOMICS — margin/price/COGS per customer × node, PRICED periods only.
+CREATE OR REPLACE VIEW lily.vw_customer_economics AS
+WITH e AS (
+    SELECT f.sales_org, f.customer_code,
+           cg.customer_group_name AS customer_name,
+           n.level, n.node_code, n.node_name, n.node_path, n.parent_path,
+           f.material_id, f.fiscal_period_key,
+           f.forecast_quantity, f.forecast_revenue_eur, f.forecast_cogs_eur, f.forecast_margin_eur,
+           (f.forecast_revenue_eur > 0) AS is_priced
+    FROM lily.vw_forecast_latest f
+    JOIN lily.vw_material_node n ON n.material_id = f.material_id
+    LEFT JOIN warehouse.dim_customer_group cg ON cg.customer_group_key = f.customer_code
+)
+SELECT sales_org, customer_code, customer_name, level, node_code, node_name, node_path, parent_path,
+       COUNT(DISTINCT material_id)                                     AS n_skus,
+       SUM(forecast_quantity)                                         AS total_forecast_qty,
+       ROUND(SUM(forecast_revenue_eur), 2)                           AS total_forecast_revenue_eur,
+       ROUND(SUM(forecast_cogs_eur)   FILTER (WHERE is_priced), 2)   AS total_forecast_cogs_eur,
+       ROUND(SUM(forecast_margin_eur) FILTER (WHERE is_priced), 2)   AS total_forecast_margin_eur,
+       CASE WHEN SUM(forecast_revenue_eur) > 0
+            THEN ROUND(SUM(forecast_margin_eur) FILTER (WHERE is_priced)
+                       / SUM(forecast_revenue_eur) * 100, 1) END      AS margin_pct,
+       CASE WHEN SUM(forecast_quantity) FILTER (WHERE is_priced) > 0
+            THEN ROUND(SUM(forecast_revenue_eur)
+                       / SUM(forecast_quantity) FILTER (WHERE is_priced), 2) END AS avg_selling_price_eur,
+       CASE WHEN SUM(forecast_quantity) FILTER (WHERE is_priced) > 0
+            THEN ROUND(SUM(forecast_cogs_eur) FILTER (WHERE is_priced)
+                       / SUM(forecast_quantity) FILTER (WHERE is_priced), 2) END AS avg_unit_cogs_eur,
+       SUM(forecast_quantity) FILTER (WHERE is_priced)                AS priced_qty,
+       COUNT(DISTINCT fiscal_period_key) FILTER (WHERE is_priced)     AS priced_periods,
+       COUNT(DISTINCT fiscal_period_key)                             AS total_periods
+FROM e
+GROUP BY sales_org, customer_code, customer_name, level, node_code, node_name, node_path, parent_path;
+
+-- 2a. CUSTOMER ACTUALS HISTORY — real sold qty/revenue per customer × node × period.
+CREATE OR REPLACE VIEW lily.vw_customer_actuals_history AS
+SELECT a.sales_org, a.customer_code,
+       cg.customer_group_name AS customer_name,
+       n.level, n.node_code, n.node_name, n.node_path, n.parent_path,
+       a.fiscal_year, a.fiscal_period, a.fiscal_period_key,
+       SUM(a.actual_quantity)                AS actual_qty,
+       ROUND(SUM(a.actual_revenue_eur), 2)   AS actual_revenue_eur,
+       COUNT(DISTINCT a.material_id)         AS n_skus
+FROM lily.vw_actuals_history a
+JOIN lily.vw_material_node n ON n.material_id = a.material_id
+LEFT JOIN warehouse.dim_customer_group cg ON cg.customer_group_key = a.customer_code
+GROUP BY a.sales_org, a.customer_code, cg.customer_group_name,
+         n.level, n.node_code, n.node_name, n.node_path, n.parent_path,
+         a.fiscal_year, a.fiscal_period, a.fiscal_period_key;
+
+-- 2b. CUSTOMER BIAS BY PERIOD — customer × node signed bias per closed period, lag-2.
+-- CONSUMES vw_forecast_actual_matched (accuracy freeze respected).
+CREATE OR REPLACE VIEW lily.vw_customer_bias AS
+SELECT m.sales_org, m.customer_code,
+       cg.customer_group_name AS customer_name,
+       n.level, n.node_code, n.node_name, n.node_path, n.parent_path,
+       m.fiscal_year, m.fiscal_period, m.fiscal_period_key,
+       SUM(m.actual_quantity)     AS actual_qty,
+       SUM(m.forecast_quantity)   AS forecast_qty,
+       ROUND(SUM(m.forecast_quantity - m.actual_quantity)
+             / NULLIF(SUM(m.actual_quantity), 0) * 100, 1) AS bias_pct
+FROM lily.vw_forecast_actual_matched m
+JOIN lily.vw_material_node n ON n.material_id = m.material_id
+LEFT JOIN warehouse.dim_customer_group cg ON cg.customer_group_key = m.customer_code
+WHERE m.lag = 2
+GROUP BY m.sales_org, m.customer_code, cg.customer_group_name,
+         n.level, n.node_code, n.node_name, n.node_path, n.parent_path,
+         m.fiscal_year, m.fiscal_period, m.fiscal_period_key;
+
+-- 3. CUSTOMER FORECAST REVISION — what changed at customer × node level between
+-- the two latest vintages, per period.
+CREATE OR REPLACE VIEW lily.vw_customer_forecast_revision AS
+SELECT d.sales_org, d.customer_code,
+       cg.customer_group_name AS customer_name,
+       n.level, n.node_code, n.node_name, n.node_path, n.parent_path,
+       d.fiscal_year, d.fiscal_period, d.fiscal_period_key,
+       SUM(d.cur_qty)                          AS cur_qty,
+       SUM(d.pri_qty)                          AS pri_qty,
+       SUM(d.qty_delta)                        AS qty_delta,
+       CASE WHEN SUM(d.pri_qty) > 0
+            THEN ROUND(SUM(d.qty_delta) / SUM(d.pri_qty)::numeric * 100, 1) END AS qty_delta_pct,
+       ROUND(SUM(d.revenue_delta_eur), 2)      AS revenue_delta_eur,
+       COUNT(DISTINCT d.material_id)           AS n_skus
+FROM lily.vw_forecast_version_delta d
+JOIN lily.vw_material_node n ON n.material_id = d.material_id
+LEFT JOIN warehouse.dim_customer_group cg ON cg.customer_group_key = d.customer_code
+GROUP BY d.sales_org, d.customer_code, cg.customer_group_name,
+         n.level, n.node_code, n.node_name, n.node_path, n.parent_path,
+         d.fiscal_year, d.fiscal_period, d.fiscal_period_key;
+
+-- 4. CUSTOMER SCAN — triage view: one row per customer (within a node or across
+-- all) with demand, budget gap, YoY, accuracy, bias. The "which customers in
+-- this category need attention?" view. Accuracy is at customer × material grain
+-- (NOT the approved material-only grain used for vw_forecast_accuracy — this is
+-- the customer-specific split, intentionally different).
+CREATE OR REPLACE VIEW lily.vw_customer_scan AS
+WITH demand AS (
+    SELECT f.sales_org, f.customer_code, n.level, n.node_code, n.node_name, n.node_path, n.parent_path,
+           SUM(f.forecast_quantity) AS demand_qty,
+           COUNT(DISTINCT f.material_id) AS n_skus
+    FROM lily.vw_forecast_latest f
+    JOIN lily.vw_material_node n ON n.material_id = f.material_id
+    GROUP BY f.sales_org, f.customer_code, n.level, n.node_code, n.node_name, n.node_path, n.parent_path
+),
+budget AS (
+    SELECT b.sales_org, b.customer_code, n.level, n.node_path,
+           SUM(b.demand_qty) FILTER (WHERE b.comparison_status = 'OVERLAP') AS demand_qty_b,
+           SUM(b.budget_qty) FILTER (WHERE b.comparison_status = 'OVERLAP') AS budget_qty
+    FROM lily.vw_demand_vs_budget b
+    JOIN lily.vw_material_node n ON n.material_id = b.material_id
+    GROUP BY b.sales_org, b.customer_code, n.level, n.node_path
+),
+revenue AS (
+    SELECT a.sales_org, a.customer_code, n.level, n.node_path,
+           ROUND(SUM(a.actual_revenue_eur), 2) AS trailing_12m_revenue_eur
+    FROM lily.vw_actuals_history a
+    JOIN lily.vw_material_node n ON n.material_id = a.material_id
+    JOIN (SELECT fiscal_period_key, RANK() OVER (ORDER BY period_idx DESC) AS recency
+          FROM (SELECT DISTINCT a2.fiscal_period_key, cal.period_idx
+                FROM warehouse.fact_actuals a2
+                JOIN lily.vw_calendar cal ON cal.fiscal_period_key = a2.fiscal_period_key) x
+         ) c ON c.fiscal_period_key = a.fiscal_period_key
+    WHERE c.recency <= 12
+    GROUP BY a.sales_org, a.customer_code, n.level, n.node_path
+),
+yoy AS (
+    SELECT a.sales_org, a.customer_code, n.level, n.node_path,
+           SUM(a.actual_quantity) FILTER (
+               WHERE a.fiscal_year = (SELECT fiscal_year FROM lily.vw_latest_closed)
+                 AND a.fiscal_period <= (SELECT fiscal_period FROM lily.vw_latest_closed)
+           ) AS qty_current_ytd,
+           SUM(a.actual_quantity) FILTER (
+               WHERE a.fiscal_year = (SELECT fiscal_year FROM lily.vw_latest_closed) - 1
+                 AND a.fiscal_period <= (SELECT fiscal_period FROM lily.vw_latest_closed)
+           ) AS qty_prior_ytd
+    FROM lily.vw_actuals_history a
+    JOIN lily.vw_material_node n ON n.material_id = a.material_id
+    GROUP BY a.sales_org, a.customer_code, n.level, n.node_path
+),
+accuracy AS (
+    SELECT m.sales_org, m.customer_code, n.level, n.node_path,
+           COUNT(DISTINCT m.fiscal_period_key) AS periods_scored,
+           SUM(m.actual_quantity) AS total_actual_qty,
+           ROUND(SUM(ABS(m.forecast_quantity - m.actual_quantity))
+                 / NULLIF(SUM(m.actual_quantity), 0) * 100, 1) AS wmape_pct,
+           ROUND(SUM(m.forecast_quantity - m.actual_quantity)
+                 / NULLIF(SUM(m.actual_quantity), 0) * 100, 1) AS bias_pct,
+           ROUND((1 - LEAST(SUM(ABS(m.forecast_quantity - m.actual_quantity))
+                            / NULLIF(SUM(m.actual_quantity), 0), 1)) * 100, 1) AS accuracy_pct
+    FROM lily.vw_forecast_actual_matched m
+    JOIN lily.vw_material_node n ON n.material_id = m.material_id
+    WHERE m.lag = 2
+    GROUP BY m.sales_org, m.customer_code, n.level, n.node_path
+)
+SELECT
+    dem.sales_org, dem.customer_code,
+    cg.customer_group_name AS customer_name,
+    dem.level, dem.node_code, dem.node_name, dem.node_path, dem.parent_path,
+    dem.demand_qty, dem.n_skus,
+    ROUND((bud.demand_qty_b - bud.budget_qty) / NULLIF(bud.budget_qty, 0) * 100, 1) AS demand_vs_budget_pct,
+    rev.trailing_12m_revenue_eur,
+    ROUND((yoy.qty_current_ytd - yoy.qty_prior_ytd) / NULLIF(yoy.qty_prior_ytd, 0) * 100, 1) AS yoy_growth_pct,
+    acc.accuracy_pct, acc.wmape_pct, acc.bias_pct, acc.periods_scored
+FROM demand dem
+LEFT JOIN budget bud
+       ON bud.sales_org = dem.sales_org AND bud.customer_code = dem.customer_code
+      AND bud.level = dem.level AND bud.node_path = dem.node_path
+LEFT JOIN revenue rev
+       ON rev.sales_org = dem.sales_org AND rev.customer_code = dem.customer_code
+      AND rev.level = dem.level AND rev.node_path = dem.node_path
+LEFT JOIN yoy
+       ON yoy.sales_org = dem.sales_org AND yoy.customer_code = dem.customer_code
+      AND yoy.level = dem.level AND yoy.node_path = dem.node_path
+LEFT JOIN accuracy acc
+       ON acc.sales_org = dem.sales_org AND acc.customer_code = dem.customer_code
+      AND acc.level = dem.level AND acc.node_path = dem.node_path
+LEFT JOIN warehouse.dim_customer_group cg ON cg.customer_group_key = dem.customer_code;

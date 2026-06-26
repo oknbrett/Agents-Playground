@@ -64,6 +64,8 @@ AGENT_TOOLS = [
     tools_module.hierarchy_view,
     tools_module.node_detail,
     tools_module.node_sku_scan,
+    tools_module.customer_detail,
+    tools_module.customer_scan,
     tools_module.actuals_history,
     tools_module.latest_actuals,
     tools_module.load_data,

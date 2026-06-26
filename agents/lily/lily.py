@@ -342,6 +342,54 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "customer_detail",
+        "description": (
+            "ONE CUSTOMER's detail at a product-hierarchy node (or whole portfolio "
+            "if node is omitted). Region-scoped (sales_org + customer_code required). "
+            "Pick an aspect: 'forecast' (forward demand series), 'economics' (margin/"
+            "price/COGS, priced periods), 'timeseries' (actuals sold per period + "
+            "lag-2 bias per period), 'revision' (what changed between the two latest "
+            "forecast vintages). NO inventory — inventory has no customer dimension; "
+            "use node_detail(aspect='inventory') or inventory_coverage for that. "
+            "Use customer_scan to find which customers matter first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sales_org": _SALES_ORG,
+                "customer_code": _CUSTOMER,
+                "node": {"type": "string", "description": "Optional: a hierarchy node by name or code to scope to (e.g. 'GROWING MEDIA'). Omit for the customer's whole portfolio."},
+                "aspect": {"type": "string",
+                           "enum": ["forecast", "economics", "timeseries", "revision"],
+                           "description": "Which view to return (default 'forecast')."},
+            },
+            "required": ["sales_org", "customer_code"],
+        },
+    },
+    {
+        "name": "customer_scan",
+        "description": (
+            "Triage scan: which CUSTOMERS matter in this region (or within a product-"
+            "hierarchy node)? One row per customer with demand, budget gap, trailing-"
+            "12m revenue, YoY growth, and forecast accuracy/bias (lag-2). Use to "
+            "answer 'who are the biggest / most off-plan / worst-accuracy customers?' "
+            "Optionally scoped to a node (e.g. 'GROWING MEDIA'). order_by: 'revenue' "
+            "(default), 'budget' (biggest gap), 'growth', 'wmape', 'bias', 'demand'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sales_org": _SALES_ORG,
+                "node": {"type": "string", "description": "Optional: scope to a hierarchy node by name or code. Omit for region-wide."},
+                "order_by": {"type": "string",
+                             "enum": ["revenue", "budget", "growth", "wmape", "bias", "demand"],
+                             "description": "How to order the customers (default 'revenue')."},
+                "n": {"type": "integer", "description": "How many customers to return (default 50)."},
+            },
+            "required": ["sales_org"],
+        },
+    },
+    {
         "name": "forecast_performance",
         "description": (
             "Forecast ACCURACY and BIAS for a SKU — how recent forecasts actually "
@@ -481,6 +529,8 @@ TOOL_DISPATCH: dict[str, Any] = {
     "hierarchy_view": tools_module.hierarchy_view,
     "node_detail": tools_module.node_detail,
     "node_sku_scan": tools_module.node_sku_scan,
+    "customer_detail": tools_module.customer_detail,
+    "customer_scan": tools_module.customer_scan,
     "inventory_coverage": tools_module.inventory_coverage,
     "product_economics": tools_module.product_economics,
     "top_skus": tools_module.top_skus,

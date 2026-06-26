@@ -1,10 +1,11 @@
 # Handoff — Lily on real Postgres: region + hierarchy rollout
 
-> Updated 2026-06-25 (pm). Start the next session by reading this file. The data
+> Updated 2026-06-26. Start the next session by reading this file. The data
 > layer is live on the real Azure warehouse; region-scoping + a pre-aggregated
-> product-hierarchy backbone landed earlier, and **the option-A node/category lift
-> is now DONE and verified** (see "Node lift" below). **Next up = the CUSTOMER
-> mirror: the same lift at customer grain.**
+> product-hierarchy backbone landed earlier, **the option-A node/category lift
+> is DONE and verified**, and **the CUSTOMER mirror is BUILT** (5 views + triage
+> scan + 2 tools). **Next up = verify the customer views against the live DB**
+> (apply_views.py + a verification script).
 
 ## How to run the demo (servers are currently STOPPED)
 ```bash
@@ -110,15 +111,53 @@ can differ a few points, most near zero. This is expected, not a bug — confirm
 node_bias to the rollup's forecast-having SKU set reproduces the rollup figure (GROWING MEDIA
 10.0 = 10.0).
 
-## NEXT — the CUSTOMER mirror (second pass)
-Same lift at customer grain: customer × category, customer-level accuracy/budget/forecast/etc.
-The facts already carry `customer_code` (customer_group_key); `vw_node_*` views currently sum
-across customers. Decide the addressing (customer × node? customer totals?) and whether it's a
-parallel `vw_customer_node` bridge or a customer_code passthrough on the existing node views.
+## Customer mirror — BUILT (2026-06-26), needs live DB verification
+Same lift at customer × node grain. Addressing decision: **parallel `vw_customer_*` views** —
+the node views keep their customer-summed grain (cheaper for the common case), and a new set of
+views adds `customer_code` as a GROUP BY dimension. Grain is **customer × node** (not customer
+totals alone), so level=1 gives the customer's whole portfolio.
+
+**Customer names** come from `warehouse.dim_customer_group` (LEFT JOINed — every customer view
+carries `customer_name` alongside `customer_code`).
+
+**Five customer views (all in `sql/lily_views_pg.sql`):**
+`vw_customer_forecast` (forward series per customer × node × period ≙ get_forecast) ·
+`vw_customer_economics` (priced-only margin/price/COGS per customer × node ≙ product_economics) ·
+`vw_customer_actuals_history` + `vw_customer_bias` (actuals + lag-2 bias per period per customer ×
+node ≙ actuals_history + bias) · `vw_customer_forecast_revision` (delta between the two latest
+vintages per customer × node × period ≙ revision).
+
+**No customer inventory view** — `vw_inventory_latest` / `vw_inventory_coverage` have no customer
+dimension (stock is by plant/material). The tool says so explicitly.
+
+**Triage view:** `vw_customer_scan` — one row per (customer × node) with demand, n_skus, budget
+gap, trailing-12m revenue, YoY growth, accuracy/bias. Accuracy here is at customer × material
+grain (NOT the approved material-only grain — this is the customer-specific split, intentionally
+different). Uses the same CTE pattern as `vw_sku_divergence`.
+
+**Two tools** (same 2-tool surface as the node lift):
+- `customer_detail(sales_org, customer_code, node?, aspect)` — aspect = forecast | economics |
+  timeseries | revision. Node is optional; omit for the customer's whole portfolio (level=1).
+  Uses `_resolve_node` for node addressing (same as node_detail).
+- `customer_scan(sales_org, node?, order_by, n)` — which customers matter (region-wide or within
+  a node)? order_by: revenue (default), budget, growth, wmape, bias, demand.
+
+Both tools in `agents/lily/tools.py`; defs+dispatch in `lily.py`; `lily_msft.py` AGENT_TOOLS
+synced; Groq/Cerebras auto-inherit from `TOOL_DEFINITIONS`. Prompt guidance in `server.py
+_data_landscape()`.
+
+**Accuracy freeze respected:** customer views CONSUME `vw_forecast_actual_matched`, never
+redefine accuracy/bias views.
+
+**⚠️ NOT YET VERIFIED against the live DB.** Needs: `apply_views.py` to create the views in
+Postgres, then a verification script (like `verify_node_lift.py` but for customer views —
+check that `vw_customer_forecast` summed across customers = `vw_node_forecast`, and that
+`vw_customer_scan` row counts make sense). This session ran in a remote container without
+Azure credentials.
 
 Reference question catalog (validated with Brett): the HomePest-anchored map of planner
-questions → which are covered vs which need these builds. The node views + customer pass close
-all the gaps.
+questions → which are covered vs which need these builds. The node views + customer mirror
+close all the gaps.
 
 ## Other open items
 - **CLAUDE.md is stale** (says FY=Nov, 15 tools, statistical stream, single-region 2510,
